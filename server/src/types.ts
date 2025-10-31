@@ -12,12 +12,20 @@ export interface SourceAttribution {
   snippet?: string;
 }
 
+export interface EntitySubject {
+  name: string;
+  type: string;
+  canonical_id: string;
+}
+
 export interface MagicVariableValue<T = unknown> {
+  subject: EntitySubject;
   name: string;
   type: MagicVariableType;
   value: T;
   confidence: number; // 0..1
   sources: SourceAttribution[];
+  observed_at?: string; // ISO timestamp
 }
 
 export interface EnrichmentResult {

@@ -6,10 +6,13 @@ import { webSearchTool } from '../tools/webSearch.js';
 import { ChatOpenAI } from '@langchain/openai';
 import { getHistory, trimHistory } from './memory.js';
 import { addMemory } from './longTermMemory.js';
-import { getTrustedFactsForEntity } from './factsStore.js';
+import { getTrustedFactsForEntity, storeFact } from './factsStore.js';
+import { resolveEntity } from './entityResolver.js';
 import { z } from 'zod';
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import { plausibilityCheckTool } from '../tools/plausibilityCheck.js';
+import { apifySearchTool } from '../tools/apifySearch.js';
+import { knowledgeQueryTool } from '../tools/knowledgeQuery.js';
 import { inferContext } from './inferenceRouter.js';
 
 function tokenize(text: string): string[] {
@@ -87,6 +90,11 @@ function sortSourcesByAuthority(sources: SourceAttribution[]): SourceAttribution
 const EnrichmentSchema = z.object({
   intent: z.enum(['boolean', 'specific', 'contextual']),
   variables: z.array(z.object({
+    subject: z.object({
+      name: z.string(),
+      type: z.string(),
+      canonical_id: z.string().optional()
+    }),
     name: z.string(),
     type: z.enum(['boolean', 'string', 'number', 'date', 'url', 'text']),
     value: z.union([z.boolean(), z.number(), z.string()]).nullable(),
@@ -95,12 +103,18 @@ const EnrichmentSchema = z.object({
       title: z.string().nullable(),
       url: z.string(),
       snippet: z.string().nullable()
-    })).default([])
+    })).default([]),
+    observed_at: z.string().optional()
   })).default([]),
   notes: z.string().nullable()
 });
 
-function finalizeResult(raw: string, intent: EnrichmentResult['intent'], web: { title?: string; url: string; snippet?: string; content?: string }[]): EnrichmentResult {
+async function finalizeResult(
+  raw: string, 
+  intent: EnrichmentResult['intent'], 
+  web: { title?: string; url: string; snippet?: string; content?: string }[],
+  defaultSubject?: { name: string; type: string }
+): Promise<EnrichmentResult> {
   let parsed: any;
   try {
     parsed = JSON.parse(raw);
@@ -108,21 +122,62 @@ function finalizeResult(raw: string, intent: EnrichmentResult['intent'], web: { 
     parsed = { intent, variables: [], notes: 'LLM returned non-JSON; using fallback.' } as EnrichmentResult;
   }
 
-  const variables: MagicVariableValue[] = Array.isArray(parsed?.variables) ? parsed.variables : [];
+  const variables: MagicVariableValue[] = [];
+  const now = new Date().toISOString();
 
-  for (const v of variables) {
-    if (typeof v.confidence !== 'number' || v.confidence < 0 || v.confidence > 1) v.confidence = 0.5;
-    if (!Array.isArray(v.sources)) v.sources = [];
-    v.sources = sortSourcesByAuthority(dedupeByUrl(v.sources));
+  for (const v of Array.isArray(parsed?.variables) ? parsed.variables : []) {
+    // Ensure subject is present
+    let subject = v.subject;
+    if (!subject && defaultSubject) {
+      // Resolve entity for default subject
+      const entityId = await resolveEntity(defaultSubject.name, defaultSubject.type);
+      subject = {
+        name: defaultSubject.name,
+        type: defaultSubject.type,
+        canonical_id: entityId
+      };
+    } else if (subject && !subject.canonical_id) {
+      // Resolve canonical_id if not provided
+      const entityId = await resolveEntity(subject.name, subject.type);
+      subject = {
+        ...subject,
+        canonical_id: entityId
+      };
+    }
+
+    if (!subject) {
+      console.warn(`Skipping variable ${v.name} - missing subject`);
+      continue;
+    }
+
+    const variable: MagicVariableValue = {
+      subject,
+      name: v.name,
+      type: v.type,
+      value: v.value,
+      confidence: typeof v.confidence === 'number' && v.confidence >= 0 && v.confidence <= 1 ? v.confidence : 0.5,
+      sources: Array.isArray(v.sources) ? sortSourcesByAuthority(dedupeByUrl(v.sources)) : [],
+      observed_at: v.observed_at || now
+    };
+
+    variables.push(variable);
   }
 
-  if (variables.length === 0) {
+  if (variables.length === 0 && defaultSubject) {
+    // Fallback context variable
+    const entityId = await resolveEntity(defaultSubject.name, defaultSubject.type);
     variables.push({
+      subject: {
+        name: defaultSubject.name,
+        type: defaultSubject.type,
+        canonical_id: entityId
+      },
       name: 'context',
       type: 'text',
       value: web.map((r: any) => `${r.title ?? r.url}:\n${(r.content ?? r.snippet ?? '').trim()}`).join('\n\n'),
       confidence: 0.4,
-      sources: web.map((r: any) => ({ title: r.title, url: r.url, snippet: (r.content ?? r.snippet) ? String(r.content ?? r.snippet).slice(0, 1000) : undefined }))
+      sources: web.map((r: any) => ({ title: r.title, url: r.url, snippet: (r.content ?? r.snippet) ? String(r.content ?? r.snippet).slice(0, 1000) : undefined })),
+      observed_at: now
     });
   }
 
@@ -223,20 +278,34 @@ export async function runAgent(query: string, expectedVars: MagicVariableDefinit
   // Run inference router to get priors and constraints
   const routerOut = await inferContext({ query, expectedVars, entity });
 
+  // Determine default subject from entity parameter
+  const defaultSubjectName = entity || 'Unknown Entity';
+  const defaultSubjectType = routerOut.entityTypePrior && Object.keys(routerOut.entityTypePrior).length > 0
+    ? Object.entries(routerOut.entityTypePrior).sort((a, b) => b[1] - a[1])[0][0]
+    : 'company';
+
   const schemaText = `
 {
   "intent": "${intent}",
   "variables": [
     {
+      "subject": {
+        "name": string,        -- The name of the entity (company/person/etc.)
+        "type": string,         -- "company" | "person" | etc.
+        "canonical_id": string  -- Optional: will be auto-generated if not provided
+      },
       "name": string,
       "type": "boolean"|"string"|"number"|"date"|"url"|"text",
       "value": any,
       "confidence": number,
-      "sources": [{"title": string|optional, "url": string, "snippet": string|optional}]
+      "sources": [{"title": string|optional, "url": string, "snippet": string|optional}],
+      "observed_at": string|optional  -- ISO timestamp
     }
   ],
   "notes": string|optional
-}`;
+}
+
+IMPORTANT: Every variable MUST include a "subject" object. The subject should be the entity (company/person/etc.) that the variable is about. If not specified, default to: ${JSON.stringify({ name: defaultSubjectName, type: defaultSubjectType })}`;
   const expectedNames = expectedVars.map(v => v.name).join(', ');
   const expectedHint = expectedNames ? `Aim to fill these variables if possible: ${expectedNames}.` : '';
 
@@ -262,13 +331,14 @@ export async function runAgent(query: string, expectedVars: MagicVariableDefinit
     : '';
 
   const system = `You are a careful research agent.
-- Search the web only when needed.
+- Before searching the web, use knowledge_query to check if we already have stored facts about the entity. IMPORTANT: Only call knowledge_query if you have a specific entity name. Pass JSON like {"entity": "Company Name"} or just the entity name as a string. If you don't have an entity name yet, skip knowledge_query and use web_search instead.
+- Search the web only when needed (when knowledge_query doesn't have the answer or you need more recent information).
 - Reconcile conflicting sources. Prefer (recent + authoritative) over isolated social posts.
 - When you encounter conflicting claims or uncertain information, use the evaluate_plausibility tool to assess which claims are more plausible using common sense and world knowledge.
 - Before calling web_search, ensure the query directly contains key terms from the user's request/entity/expected variables. Do NOT search for generic placeholders (e.g., "input", "query"). If you cannot formulate a relevant query, do not call web_search.
 - When calling evaluate_plausibility, pass JSON like {"claims":["claim A","claim B"],"context":"..."}. Do not pass empty input.
 - If evidence conflicts, lower confidence and summarize the disagreement.
-- Citations-required: For every factual variable, include at least ${routerOut.evidencePolicy.minCorroboration} source${routerOut.evidencePolicy.minCorroboration > 1 ? 's' : ''} URL${routerOut.evidencePolicy.minCorroboration > 1 ? 's' : ''}. For date/number/string, prefer at least two agreeing authoritative sources.${routerOut.evidencePolicy.requireAuthority ? ' Require at least one high-authority source (Wikidata, Wikipedia, SEC, company site, major news).' : ''}
+- Citations-required: For every factual variable, include at least ${routerOut.evidencePolicy.minCorroboration} source${routerOut.evidencePolicy.minCorroboration > 1 ? 's' : ''}. For date/number/string, prefer at least two agreeing authoritative sources.${routerOut.evidencePolicy.requireAuthority ? ' Require at least one high-authority source (Wikidata, Wikipedia, SEC, company site, major news).' : ''}
 - Authority ranking: Prefer Wikidata/Wikipedia/company site/SEC over low-authority blogs.
 - Grounded finalization: Base answers ONLY on provided tool outputs or trusted facts. Do not fabricate.
 - Low-confidence refusal: If sources are weak or disagree, set value to null and explain uncertainty in notes.
@@ -313,25 +383,53 @@ ${schemaText}`
       let parsed: any = null;
       try { parsed = JSON.parse(candidate); } catch {}
       if (parsed && Array.isArray(parsed.variables)) {
+        // Ensure all variables have subjects (add default if missing)
+        for (const v of parsed.variables) {
+          if (!v.subject && defaultSubjectName !== 'Unknown Entity') {
+            v.subject = {
+              name: defaultSubjectName,
+              type: defaultSubjectType
+            };
+          }
+        }
+        
         // Filter variables based on attribute constraints
-        const allowedVars = (parsed.variables as MagicVariableValue[]).filter(v => {
+        const allowedVars = (parsed.variables as any[]).filter((v: any) => {
           const constraint = routerOut.attrConstraints[v.name];
-          return constraint !== 'forbidden';
+          return constraint !== 'forbidden' && v.subject; // Must have subject
         });
         
         // Update parsed variables to only include allowed ones
         parsed.variables = allowedVars;
         
-        const check = validateCitations(allowedVars, routerOut.evidencePolicy);
-        if (!check.ok && steps < MAX_STEPS) {
+        // Validate that variables have subjects and citations
+        const validationIssues: string[] = [];
+        for (const v of allowedVars) {
+          if (!v.subject || !v.subject.name) {
+            validationIssues.push(`Variable "${v.name}" is missing required subject.`);
+          }
+        }
+        
+        if (validationIssues.length === 0) {
+          const check = validateCitations(allowedVars as MagicVariableValue[], routerOut.evidencePolicy);
+          if (!check.ok && steps < MAX_STEPS) {
+            const nudge = new HumanMessage(
+              `Verification gate not satisfied:\n- ${check.issues.join('\n- ')}\nIf needed, run another web_search to gather corroborating sources, then return ONLY the corrected final JSON.`
+            );
+            messages.push(nudge);
+            await history.addUserMessage(nudge.content as string);
+            // continue loop to allow tools or final correction
+            continue;
+          }
+        } else if (steps < MAX_STEPS) {
           const nudge = new HumanMessage(
-            `Verification gate not satisfied:\n- ${check.issues.join('\n- ')}\nIf needed, run another web_search to gather corroborating sources, then return ONLY the corrected final JSON.`
+            `Required fields missing:\n- ${validationIssues.join('\n- ')}\nPlease ensure every variable includes a subject object with "name" and "type" fields, then return ONLY the corrected final JSON.`
           );
           messages.push(nudge);
           await history.addUserMessage(nudge.content as string);
-          // continue loop to allow tools or final correction
           continue;
         }
+        
         // Update candidate with filtered variables
         finalRaw = JSON.stringify(parsed);
       } else {
@@ -345,7 +443,7 @@ ${schemaText}`
       try {
         const argsStr = typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args ?? '');
         if (tc.name === 'web_search') {
-          // Inspect proposed query; block off-topic searches
+          console.log("web_search");
           let proposed = argsStr;
           try {
             const parsed = JSON.parse(argsStr);
@@ -370,14 +468,31 @@ ${schemaText}`
             // ignore parse issues
           }
         } else if (tc.name === 'evaluate_plausibility') {
+          console.log("evaluate_plausability");
           result = String(await plausibilityCheckTool.invoke(argsStr));
+          console.log(result)
+        } else if (tc.name === 'apify_search') {
+          console.log("apify_search");
+          result = String(await apifySearchTool.invoke(argsStr));
+          console.log(result);
+          try {
+              const parsed = JSON.parse(result);
+              if (Array.isArray(parsed)){
+                webResults = [...webResults, ...parsed];
+              }
+          } catch {
+              // ignore parse issues
+          }
+        } else if (tc.name === 'knowledge_query') {
+          console.log("knowledge_query");
+          result = String(await knowledgeQueryTool.invoke(argsStr));
+          console.log(result);
         } else {
           result = JSON.stringify({ error: `Unknown tool: ${tc.name}` });
         }
       } catch (e: any) {
         result = JSON.stringify({ error: e?.message ?? 'Tool execution failed' });
       }
-      console.log(result)
 
 
       const toolMsg = new ToolMessage({
@@ -434,7 +549,8 @@ ${schemaText}`
     // not JSON, will be handled by finalize
   }
 
-  let result = finalizeResult(normalized, intent, webResults);
+  const defaultSubject = entity ? { name: entity, type: defaultSubjectType } : undefined;
+  let result = await finalizeResult(normalized, intent, webResults, defaultSubject);
   console.log(result);
 
   // Apply trusted facts overrides when available
@@ -448,6 +564,22 @@ ${schemaText}`
         v.sources = dedupeByUrl([tfSource, ...v.sources]);
       }
     }
+  }
+
+  // Store facts for all variables
+  try {
+    for (const variable of result.variables) {
+      // Skip context variables or variables without proper subjects
+      if (variable.name === 'context' || !variable.subject || !variable.subject.canonical_id) {
+        continue;
+      }
+      
+      const observedAt = variable.observed_at ? new Date(variable.observed_at) : undefined;
+      await storeFact(variable, observedAt);
+    }
+  } catch (error) {
+    console.error('Failed to store facts:', error);
+    // Don't fail the entire request if fact storage fails
   }
 
   return result;

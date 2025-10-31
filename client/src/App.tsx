@@ -1,7 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 type Source = { title?: string; url: string; snippet?: string };
-type Variable = { name: string; type: string; value: unknown; confidence: number; sources: Source[] };
+type Subject = { name: string; type: string; canonical_id?: string };
+type Variable = { 
+  subject: Subject;
+  name: string; 
+  type: string; 
+  value: unknown; 
+  confidence: number; 
+  sources: Source[];
+  observed_at?: string;
+};
 
 type Result = {
   intent: 'boolean' | 'specific' | 'contextual';
