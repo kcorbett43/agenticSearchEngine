@@ -17,7 +17,22 @@ export async function trimHistory(sessionId: string): Promise<void> {
   if (!history) return;
   const messages = await history.getMessages();
   if (messages.length <= MAX_MESSAGES) return;
-  const keep = messages.slice(-MAX_MESSAGES);
+  let keep = messages.slice(-MAX_MESSAGES);
+
+  // If the first kept message is a ToolMessage, try to include its preceding AI tool_call parent
+  const first: any = keep[0];
+  const toolCallId: string | undefined = (first && (first as any).tool_call_id) ? String((first as any).tool_call_id) : undefined;
+  if (toolCallId) {
+    const startIdx = messages.length - MAX_MESSAGES - 1;
+    for (let i = startIdx; i >= 0; i--) {
+      const m: any = messages[i];
+      const aiCalls: any[] | undefined = Array.isArray(m?.tool_calls) ? m.tool_calls : undefined;
+      if (aiCalls && aiCalls.some((c: any) => String(c?.id ?? '') === toolCallId)) {
+        keep = [m, ...keep];
+        break;
+      }
+    }
+  }
   await history.clear();
   for (const m of keep) {
     await history.addMessage(m);

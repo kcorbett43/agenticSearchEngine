@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { runEnrichment } from '../services/enrich.js';
+import { runAgent } from '../services/researchAgent.js';
 
 export const enrichRouter = Router();
 
@@ -26,7 +26,7 @@ enrichRouter.post('/', async (req, res) => {
   }
 
   try {
-    const result = await runEnrichment(parsed.data.query, parsed.data.variables ?? [], parsed.data.sessionId, parsed.data.username);
+    const result = await runAgent(parsed.data.query, parsed.data.variables ?? [], parsed.data.sessionId, parsed.data.username);
     res.json(result);
   } catch (err) {
     console.error(err);

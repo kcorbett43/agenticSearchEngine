@@ -1,4 +1,5 @@
-import { LlmProvider } from './providers.js';
+import { LlmProvider } from "./providers";
+import { HumanMessage } from '@langchain/core/messages';
 
 export type Intent = 'boolean' | 'specific' | 'contextual';
 
@@ -16,7 +17,12 @@ Examples:
 - "Tell me about Stripe's business model" -> {"intent":"contextual","target":"business model"}
 
 Query: ${query}`;
-  const raw = await llm.complete(prompt, { json: true });
+  const response = await llm.invoke([new HumanMessage(prompt)]);
+  const raw = typeof response.content === 'string' 
+    ? response.content 
+    : Array.isArray(response.content)
+      ? response.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? '')).join('')
+      : String(response.content);
   try {
     const parsed = JSON.parse(raw);
     const intent = parsed.intent as Intent;
