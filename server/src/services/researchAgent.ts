@@ -501,6 +501,7 @@ ${schemaText}`
           console.log(result);
         } else if (tc.name === 'latest_finder') {
           console.log("latest_finder");
+          console.log(argsStr);
           result = String(await latestFinderTool.invoke(argsStr));
           console.log(result);
         } else {
@@ -603,6 +604,7 @@ ${schemaText}`
     console.error('Failed to store facts:', error);
     // Don't fail the entire request if fact storage fails
   }
+  console.log(result);
 
   return result;
 }

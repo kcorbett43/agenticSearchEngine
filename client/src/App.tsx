@@ -24,6 +24,7 @@ type ChatMessage = {
   content: string;
   createdAt: number;
   status?: 'pending' | 'done' | 'error';
+  jsonData?: Result;
 };
 
 const API_URL = 'http://localhost:4001';
@@ -96,7 +97,8 @@ export function App() {
         role: 'assistant',
         content: text,
         createdAt: Date.now(),
-        status: 'done'
+        status: 'done',
+        jsonData: json
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err: any) {
@@ -181,6 +183,14 @@ function MessageItem({ message }: { message: ChatMessage }) {
     <div className={isUser ? 'msg-row user' : 'msg-row assistant'}>
       <div className="bubble">
         <div className="content">{formatContent(message.content)}</div>
+        {message.jsonData && (
+          <div className="json-container">
+            <details>
+              <summary className="json-toggle">View Full JSON Response</summary>
+              <pre className="json-display">{JSON.stringify(message.jsonData, null, 2)}</pre>
+            </details>
+          </div>
+        )}
         <div className="footer">
           <span className="muted">{ts}{message.status === 'error' ? ' · error' : ''}</span>
         </div>
