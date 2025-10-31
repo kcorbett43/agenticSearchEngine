@@ -26,6 +26,15 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
+  const sessionId = useMemo(() => {
+    let id = localStorage.getItem('artisan_session_id');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('artisan_session_id', id);
+    }
+    return id;
+  }, []);
+
   useEffect(() => {
     // initial message to hint usage
     if (messages.length === 0) {
@@ -68,7 +77,7 @@ export function App() {
       const res = await fetch(`${API_URL}/api/enrich`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: trimmed })
+        body: JSON.stringify({ query: trimmed, sessionId })
       });
       if (!res.ok) throw new Error('Request failed');
       const json = (await res.json()) as Result;
@@ -159,20 +168,47 @@ function MessageItem({ message }: { message: ChatMessage }) {
 }
 
 function renderAssistantText(result: Result): string {
-  const parts: string[] = [];
-  const title =
-    result.intent === 'boolean' ? 'Boolean question' : result.intent === 'specific' ? 'Specific answer' : 'Contextual information';
-  parts.push(`Detected intent: ${title}`);
-  if (Array.isArray(result.variables) && result.variables.length > 0) {
-    for (const v of result.variables.slice(0, 5)) {
-      const valueStr = typeof v.value === 'object' ? JSON.stringify(v.value) : String(v.value);
-      parts.push(`• ${v.name} (${v.type}, ${(v.confidence * 100).toFixed(0)}%): ${valueStr}`);
-      const src = v.sources?.[0];
-      if (src?.url) parts.push(`  ↳ source: ${src.title ?? ''} ${src.url}`.trim());
-    }
+  const lines: string[] = [];
+  const vars = Array.isArray(result.variables) ? result.variables.slice(0, 5) : [];
+
+  const boolVar = vars.find(v => typeof v.value === 'boolean');
+  if (result.intent === 'boolean' && boolVar) {
+    lines.push(boolVar.value ? 'Yes.' : 'No.');
+    const src = boolVar.sources?.[0];
+    if (src?.url) lines.push(`Source: ${src.title ?? ''} ${src.url}`.trim());
+    return lines.join('\n');
   }
-  if (result.notes) parts.push(`Notes: ${result.notes}`);
-  return parts.join('\n');
+
+  if (result.intent === 'specific' && vars.length) {
+    for (const v of vars) {
+      const label = v.name.replace(/_/g, ' ');
+      const valueStr = typeof v.value === 'object' ? JSON.stringify(v.value) : String(v.value);
+      lines.push(`${label.charAt(0).toUpperCase() + label.slice(1)}: ${valueStr}`);
+      const src = v.sources?.[0];
+      if (src?.url) lines.push(`  Source: ${src.title ?? ''} ${src.url}`.trim());
+    }
+    return lines.join('\n');
+  }
+
+  const contextVar = vars.find(
+    (v): v is Variable & { value: string } =>
+      v.name === 'context' && typeof v.value === 'string'
+  );  
+  
+  if (contextVar && contextVar.value.trim()) {
+    lines.push(String(contextVar.value));
+    const src = contextVar.sources?.[0];
+    if (src?.url) lines.push(`Source: ${src.title ?? ''} ${src.url}`.trim());
+    return lines.join('\n');
+  }
+
+  for (const v of vars) {
+    const label = v.name.replace(/_/g, ' ');
+    const valueStr = typeof v.value === 'object' ? JSON.stringify(v.value) : String(v.value);
+    lines.push(`${label.charAt(0).toUpperCase() + label.slice(1)}: ${valueStr}`);
+  }
+  if (!lines.length && result.notes) lines.push(result.notes);
+  return lines.join('\n');
 }
 
 

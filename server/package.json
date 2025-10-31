@@ -9,9 +9,11 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@langchain/openai": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "langchain": "^1.0.2",
     "node-fetch": "^3.3.2",
     "zod": "^3.23.8"
   },
@@ -25,4 +27,3 @@
     "typescript": "^5.4.5"
   }
 }
-

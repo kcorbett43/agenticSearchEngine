@@ -14,7 +14,8 @@ const EnrichRequestSchema = z.object({
         description: z.string().optional()
       })
     )
-    .optional()
+    .optional(),
+  sessionId: z.string().min(1).optional()
 });
 
 enrichRouter.post('/', async (req, res) => {
@@ -24,7 +25,7 @@ enrichRouter.post('/', async (req, res) => {
   }
 
   try {
-    const result = await runEnrichment(parsed.data.query, parsed.data.variables ?? []);
+    const result = await runEnrichment(parsed.data.query, parsed.data.variables ?? [], parsed.data.sessionId);
     res.json(result);
   } catch (err) {
     console.error(err);

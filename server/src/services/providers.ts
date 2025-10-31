@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { ChatOpenAI } from '@langchain/openai';
 
 export interface SearchResultItem {
   title?: string;
@@ -63,31 +64,24 @@ export function createSerpApiSearch(): SearchProvider {
 
 export function createOpenAiLlm(): LlmProvider {
   const apiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const modelName = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const model = new ChatOpenAI({
+    model: modelName,
+    temperature: 0.2,
+    apiKey
+  });
+
   return {
     async complete(prompt: string, opts?: { json?: boolean }) {
       if (!apiKey) {
         return opts?.json ? JSON.stringify({ mock: true }) : 'Mock response (no OPENAI_API_KEY)';
       }
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: 'You are a precise research assistant. Prefer structured, sourced answers.' },
-            { role: 'user', content: prompt }
-          ],
-          response_format: opts?.json ? { type: 'json_object' } : undefined,
-          temperature: 0.2
-        })
-      });
-      const data: any = await res.json();
-      const content = data?.choices?.[0]?.message?.content ?? '';
-      return content;
+      const aiMessage: any = await model.invoke(prompt);
+      if (typeof aiMessage?.content === 'string') return aiMessage.content;
+      if (Array.isArray(aiMessage?.content)) {
+        return aiMessage.content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join('');
+      }
+      return '';
     }
   };
 }
