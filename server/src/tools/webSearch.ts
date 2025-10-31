@@ -79,7 +79,7 @@ export const webSearchTool = new DynamicTool({
   description: 'Search the web and return JSON results: [{title, url, snippet, content?}]',
   func: async (input: string) => {
     let query = input;
-    let num = 10;
+    let num = 3;
     let includeContent = true;
     let days: number | undefined;
     let depth: 'basic' | 'advanced' = 'advanced';

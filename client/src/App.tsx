@@ -176,6 +176,15 @@ function renderAssistantText(result: Result): string {
     lines.push(boolVar.value ? 'Yes.' : 'No.');
     const src = boolVar.sources?.[0];
     if (src?.url) lines.push(`Source: ${src.title ?? ''} ${src.url}`.trim());
+
+    const extras = vars.filter(v => v !== boolVar);
+    for (const v of extras) {
+      const label = v.name.replace(/_/g, ' ');
+      const valueStr = typeof v.value === 'object' ? JSON.stringify(v.value) : String(v.value);
+      lines.push(`${label.charAt(0).toUpperCase() + label.slice(1)}: ${valueStr}`);
+      const s = v.sources?.[0];
+      if (s?.url) lines.push(`  Source: ${s.title ?? ''} ${s.url}`.trim());
+    }
     return lines.join('\n');
   }
 

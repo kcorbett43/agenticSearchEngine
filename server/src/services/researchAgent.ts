@@ -150,7 +150,7 @@ async function maybeSummarizeAndPersist(sessionId: string, username?: string): P
     const modelName = process.env.OPENAI_MODEL || 'gpt-4o-mini';
     const model = new ChatOpenAI({
       model: modelName,
-      temperature: 0.2,
+      temperature: 1,
       apiKey: process.env.OPENAI_API_KEY,
       maxRetries: 2,
       timeout: 60_000

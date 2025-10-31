@@ -17,7 +17,7 @@ export function createOpenAiToolModel(tools: Tool[]): LlmProvider {
   const modelName = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const model = new ChatOpenAI({
     model: modelName,
-    temperature: 0.4,
+    temperature:1,
     apiKey,
     maxRetries: 2,
     timeout: 60_000
