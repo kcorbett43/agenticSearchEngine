@@ -9,10 +9,10 @@ type Result = {
   notes?: string;
 };
 
-const API_URL = ''; // Empty string means same origin, proxy will handle it
+const API_URL = '';
 
 export function App() {
-  const [query, setQuery] = useState('Tell me about Stripe\'s business model');
+  const [query, setQuery] = useState('Tell me about Artisan\'s business model');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Result | null>(null);

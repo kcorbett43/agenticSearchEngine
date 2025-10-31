@@ -3,6 +3,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+ideas/*
 
 .env
 .env.local
@@ -13,6 +14,7 @@ build/
 logs
 *.log
 npm-debug.log*
+overview.txt
 
 pids
 *.pid

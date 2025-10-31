@@ -6,7 +6,6 @@ export const enrichRouter = Router();
 
 const EnrichRequestSchema = z.object({
   query: z.string().min(2),
-  // optional hint for expected variables to return (names and desired types)
   variables: z
     .array(
       z.object({
@@ -19,12 +18,15 @@ const EnrichRequestSchema = z.object({
 });
 
 enrichRouter.post('/', async (req, res) => {
+  console.log("hello");
   const parsed = EnrichRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: 'Invalid request', details: parsed.error.flatten() });
   }
+  console.log("2");
 
   try {
+    console.log("3");
     const result = await runEnrichment(parsed.data.query, parsed.data.variables ?? []);
     res.json(result);
   } catch (err) {

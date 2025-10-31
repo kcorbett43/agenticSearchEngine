@@ -14,6 +14,7 @@ function dedupeByUrl(sources: SourceAttribution[]): SourceAttribution[] {
 }
 
 export async function runEnrichment(query: string, expectedVars: MagicVariableDefinition[]): Promise<EnrichmentResult> {
+  console.log("inside runEnrichment");
   const llm = getDefaultLlm();
   const search = getDefaultSearch();
 
@@ -39,7 +40,7 @@ Return strictly the requested JSON schema. Include sources used.`;
   ],
   "notes": string|optional
 }`;
-
+  console.log("4");
   const expectedNames = expectedVars.map(v => v.name).join(', ');
   const expectedHint = expectedNames ? `Aim to fill these variables if possible: ${expectedNames}.` : '';
 
@@ -54,11 +55,13 @@ Web context (top results):\n${context}
 
 Produce the JSON exactly matching this schema (no markdown):
 ${schema}`;
-
+  console.log("5");
   const raw = await llm.complete(prompt, { json: true });
+  console.log(raw);
 
   let parsed: any;
   try {
+    console.log(raw)
     parsed = JSON.parse(raw);
   } catch {
     parsed = { intent, variables: [], notes: 'LLM returned non-JSON; using fallback.' } as EnrichmentResult;
