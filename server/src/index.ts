@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { enrichRouter } from './routes/enrich.js';
+import { validateRouter } from './routes/validate.js';
 import { pool } from './services/db.js';
 
 dotenv.config({ path: process.env.NODE_ENV === 'production' ? '.env' : '../.env' });
@@ -9,7 +10,7 @@ dotenv.config({ path: process.env.NODE_ENV === 'production' ? '.env' : '../.env'
 // Test database connection
 pool.query('SELECT NOW()').then(() => {
   console.log('Database connected');
-}).catch((err) => {
+}).catch((err: unknown) => {
   console.error('Database connection failed:', err);
 });
 
@@ -22,6 +23,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/enrich', enrichRouter);
+app.use('/api/validate', validateRouter);
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4001;
 app.listen(PORT, () => {
