@@ -66,9 +66,7 @@ export function createOpenAiLlm(): LlmProvider {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   return {
     async complete(prompt: string, opts?: { json?: boolean }) {
-      console.log("inside complete");
       if (!apiKey) {
-        console.log("no api key");
         return opts?.json ? JSON.stringify({ mock: true }) : 'Mock response (no OPENAI_API_KEY)';
       }
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -87,7 +85,6 @@ export function createOpenAiLlm(): LlmProvider {
           temperature: 0.2
         })
       });
-      console.log(res);
       const data: any = await res.json();
       const content = data?.choices?.[0]?.message?.content ?? '';
       return content;

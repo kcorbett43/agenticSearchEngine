@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 type Source = { title?: string; url: string; snippet?: string };
 type Variable = { name: string; type: string; value: unknown; confidence: number; sources: Source[] };
@@ -9,108 +9,170 @@ type Result = {
   notes?: string;
 };
 
-const API_URL = '';
+type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: number;
+  status?: 'pending' | 'done' | 'error';
+};
+
+const API_URL = 'http://localhost:4001';
 
 export function App() {
-  const [query, setQuery] = useState('Tell me about Artisan\'s business model');
-  const [loading, setLoading] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<Result | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
-  const intentLabel = useMemo(() => {
-    if (!result) return '';
-    if (result.intent === 'boolean') return 'Boolean question';
-    if (result.intent === 'specific') return 'Specific answer';
-    return 'Contextual information';
-  }, [result]);
+  useEffect(() => {
+    // initial message to hint usage
+    if (messages.length === 0) {
+      setMessages([
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: 'Ask me about companies or people. I will research and extract structured facts with sources.',
+          createdAt: Date.now(),
+          status: 'done'
+        }
+      ]);
+    }
+  }, []);
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
+  useEffect(() => {
+    // auto scroll to bottom on new message
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length]);
+
+  async function handleSend() {
+    const trimmed = input.trim();
+    if (!trimmed || sending) return;
     setError(null);
-    setResult(null);
+
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: trimmed,
+      createdAt: Date.now(),
+      status: 'done'
+    };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput('');
+
+    setSending(true);
     try {
       const res = await fetch(`${API_URL}/api/enrich`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query })
+        body: JSON.stringify({ query: trimmed })
       });
       if (!res.ok) throw new Error('Request failed');
       const json = (await res.json()) as Result;
-      setResult(json);
+      const text = renderAssistantText(json);
+      const assistantMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: text,
+        createdAt: Date.now(),
+        status: 'done'
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
     } catch (err: any) {
       setError(err?.message || 'Something went wrong');
+      const assistantMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'Sorry, something went wrong. Please try again.',
+        createdAt: Date.now(),
+        status: 'error'
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
     } finally {
-      setLoading(false);
+      setSending(false);
+    }
+  }
+
+  function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    void handleSend();
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void handleSend();
     }
   }
 
   return (
-    <div className="container">
-      <h1>Artisan Research</h1>
-      <p className="muted">Enter a natural language query about a company or person. The app will return structured, sourced magic variables.</p>
-      <div className="card" style={{ marginTop: 12 }}>
-        <form onSubmit={onSubmit} className="row">
-          <input
-            placeholder="e.g., Is OpenAI profitable? or Who founded Nvidia?"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          <button disabled={loading}>{loading ? 'Researching…' : 'Research'}</button>
-        </form>
+    <div className="chat-container">
+      <div className="chat-header">
+        <h1>Artisan Chat</h1>
+        <div className="muted">Multi-turn Q&A with structured research responses</div>
       </div>
 
-      {error && (
-        <div className="card" style={{ marginTop: 12, borderColor: '#ef444466' }}>
-          <strong>Error:</strong> {error}
-        </div>
-      )}
+      <div className="chat-messages" ref={listRef} aria-live="polite" aria-relevant="additions">
+        {messages.map((m) => (
+          <MessageItem key={m.id} message={m} />
+        ))}
+      </div>
 
-      {result && (
-        <div className="card" style={{ marginTop: 12 }}>
-          <div className="muted">Detected intent: {intentLabel}</div>
-          <div className="vars" style={{ marginTop: 12 }}>
-            {result.variables.map((v, i) => (
-              <div key={i} className="var">
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <strong>{v.name}</strong>
-                  <span className="muted">{v.type} · {(v.confidence * 100).toFixed(0)}% confident</span>
-                </div>
-                <div style={{ marginTop: 8 }}>
-                  {renderValue(v)}
-                </div>
-                <div className="sources" style={{ marginTop: 8 }}>
-                  {v.sources.slice(0, 5).map((s, j) => (
-                    <div key={j}>
-                      <a href={s.url} target="_blank" rel="noreferrer">{s.title || s.url}</a>
-                      {s.snippet ? ` — ${s.snippet}` : ''}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-          {result.notes && (
-            <div className="muted" style={{ marginTop: 12 }}>{result.notes}</div>
-          )}
-        </div>
+      <form className="chat-input-bar" onSubmit={onSubmit}>
+        <textarea
+          placeholder={sending ? 'Working…' : 'Type your message'}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKeyDown}
+          rows={1}
+          disabled={sending}
+          aria-label="Chat input"
+        />
+        <button type="submit" disabled={sending || input.trim().length === 0} aria-label="Send message">
+          {sending ? 'Sending…' : 'Send'}
+        </button>
+      </form>
+
+      {error && (
+        <div className="chat-error" role="alert">{error}</div>
       )}
     </div>
   );
 }
 
-function renderValue(v: Variable) {
-  if (v.type === 'boolean') return <span>{String(v.value)}</span>;
-  if (v.type === 'url') return (
-    <a href={String(v.value)} target="_blank" rel="noreferrer">{String(v.value)}</a>
+function MessageItem({ message }: { message: ChatMessage }) {
+  const isUser = message.role === 'user';
+  const ts = new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return (
+    <div className={isUser ? 'msg-row user' : 'msg-row assistant'}>
+      <div className="bubble">
+        <div className="content">{message.content}</div>
+        <div className="footer">
+          <span className="muted">{ts}{message.status === 'error' ? ' · error' : ''}</span>
+        </div>
+      </div>
+    </div>
   );
-  if (v.type === 'number') return <span>{String(v.value)}</span>;
-  if (v.type === 'date') {
-    const d = new Date(String(v.value));
-    return <span>{isNaN(d.getTime()) ? String(v.value) : d.toDateString()}</span>;
+}
+
+function renderAssistantText(result: Result): string {
+  const parts: string[] = [];
+  const title =
+    result.intent === 'boolean' ? 'Boolean question' : result.intent === 'specific' ? 'Specific answer' : 'Contextual information';
+  parts.push(`Detected intent: ${title}`);
+  if (Array.isArray(result.variables) && result.variables.length > 0) {
+    for (const v of result.variables.slice(0, 5)) {
+      const valueStr = typeof v.value === 'object' ? JSON.stringify(v.value) : String(v.value);
+      parts.push(`• ${v.name} (${v.type}, ${(v.confidence * 100).toFixed(0)}%): ${valueStr}`);
+      const src = v.sources?.[0];
+      if (src?.url) parts.push(`  ↳ source: ${src.title ?? ''} ${src.url}`.trim());
+    }
   }
-  if (typeof v.value === 'object') return <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(v.value, null, 2)}</pre>;
-  return <span>{String(v.value)}</span>;
+  if (result.notes) parts.push(`Notes: ${result.notes}`);
+  return parts.join('\n');
 }
 
 

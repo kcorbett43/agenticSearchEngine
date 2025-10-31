@@ -3,21 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Artisan Research</title>
+    <title>Artisan Chat</title>
     <style>
       :root { color-scheme: light dark; }
+      html, body, #root { height: 100%; }
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 0; }
-      .container { max-width: 900px; margin: 0 auto; padding: 24px; }
       .card { border: 1px solid #e5e7eb33; border-radius: 12px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); background: rgba(255,255,255,0.02); }
       input, textarea { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #e5e7eb44; background: transparent; color: inherit; }
       button { padding: 10px 14px; border-radius: 10px; border: 1px solid #e5e7eb44; background: #0ea5e9; color: white; cursor: pointer; }
       button[disabled] { background: #93c5fd; cursor: not-allowed; }
       .row { display: flex; gap: 12px; align-items: center; }
       .muted { color: #9ca3af; font-size: 12px; }
-      .vars { display: grid; grid-template-columns: 1fr; gap: 12px; }
-      .var { padding: 12px; border-radius: 10px; border: 1px solid #e5e7eb33; }
-      .sources { font-size: 12px; }
       a { color: #0ea5e9; text-decoration: none; }
+
+      /* Chat layout */
+      .chat-container { display: flex; flex-direction: column; height: 100%; max-width: 900px; margin: 0 auto; }
+      .chat-header { padding: 16px 16px 8px; position: sticky; top: 0; background: transparent; backdrop-filter: blur(4px); z-index: 1; }
+      .chat-messages { flex: 1; overflow: auto; padding: 0 16px 96px; box-sizing: border-box; }
+      .chat-input-bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px; box-sizing: border-box; display: flex; gap: 12px; align-items: flex-end; background: rgba(255,255,255,0.02); border-top: 1px solid #e5e7eb33; }
+      .chat-input-bar textarea { resize: none; max-height: 160px; }
+      .chat-error { position: fixed; left: 50%; transform: translateX(-50%); bottom: 76px; background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; padding: 8px 12px; border-radius: 8px; }
+
+      .msg-row { display: flex; margin: 12px 0; }
+      .msg-row.user { justify-content: flex-end; }
+      .msg-row.assistant { justify-content: flex-start; }
+      .bubble { max-width: 80%; border: 1px solid #e5e7eb33; border-radius: 12px; padding: 10px 12px; }
+      .msg-row.user .bubble { background: #0ea5e9; color: white; border-color: transparent; }
+      .msg-row.assistant .bubble { background: rgba(255,255,255,0.02); }
+      .bubble .content { white-space: pre-wrap; }
+      .bubble .footer { margin-top: 6px; }
     </style>
   </head>
   <body>
