@@ -211,4 +211,21 @@ export async function setTrustedFact(params: {
   };
 }
 
+/**
+ * Finds similar/related fact variable names for an entity, used to map synonyms.
+ */
+export async function findSimilarFactNames(entityId: string, patternBase: string, limit: number = 5): Promise<string[]> {
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  const base = normalize(patternBase);
+  try {
+    const res = await pool.query(
+      `SELECT DISTINCT name FROM facts WHERE entity_id = $1 AND LOWER(name) LIKE LOWER($2) LIMIT $3`,
+      [entityId, `%${base}%`, limit]
+    );
+    return res.rows.map((r: any) => r.name).filter((n: string) => normalize(n) !== base);
+  } catch {
+    return [];
+  }
+}
+
 

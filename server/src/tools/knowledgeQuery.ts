@@ -1,6 +1,8 @@
 import { DynamicTool } from '@langchain/core/tools';
-import { resolveEntity } from '../services/entityResolver.js';
-import { getFact, getFactsForEntity } from '../services/factsStore.js';
+import { getFact, getFactsForEntity, findSimilarFactNames } from '../services/factsStore.js';
+import { runAgent } from '../services/researchAgent.js';
+import { tryResolveExistingEntity, searchEntitiesByName } from '../services/entityResolver.js';
+
 
 export const knowledgeQueryTool = new DynamicTool({
   name: 'knowledge_query',
@@ -32,38 +34,81 @@ Returns JSON with fact data including name, value, confidence, sources, and obse
     if (!entity) {
       return JSON.stringify({
         error: 'Entity name is required',
-        hint: 'Pass JSON like {"entity": "Apple Inc", "variable_name": "ceo_name"} or just a plain entity name string.'
+        hint: 'Pass JSON like EXAMPLE :{"entity": "Apple Inc", "variable_name": "ceo_name"} or just a plain entity name string.'
       });
     }
 
     try {
-      // 1️⃣ Resolve entity ID
-      const entityType = 'company'; // Default, could be enhanced to detect type
-      const entityId = await resolveEntity(entity, entityType);
+      // 1️⃣ Resolve existing entity without creating a new record
+      const resolved = await tryResolveExistingEntity(entity);
+      if (!resolved) {
+        const candidates = await searchEntitiesByName(entity, 5);
+        return JSON.stringify({
+          code: 'ENTITY_UNRESOLVED',
+          error: 'Could not resolve entity',
+          entity_query: entity,
+          suggestions: candidates.map((c: any) => ({ id: c.id, name: c.name, type: c.type, score: c.score }))
+        });
+      }
+      const entityId = resolved.id;
 
       // 2️⃣ If a specific variable is requested
       if (variable_name) {
-        const fact = await getFact(entityId, variable_name);
+        const tryReturn = (f: any, original?: string, note?: string) => JSON.stringify({
+          entity,
+          entity_id: entityId,
+          variable_name: f.name,
+          original_query: original ?? undefined,
+          value: f.value,
+          dtype: f.dtype,
+          confidence: f.confidence,
+          sources: f.sources,
+          observed_at: f.observed_at.toISOString(),
+          valid_from: f.valid_from.toISOString(),
+          note
+        });
+
+        let fact = await getFact(entityId, variable_name);
+
+        // Try synonyms if cache miss
+        if (!fact) {
+          const synonyms = await findSimilarFactNames(entityId, variable_name);
+          for (const syn of synonyms) {
+            const f = await getFact(entityId, syn);
+            if (f) return tryReturn(f, variable_name, `Found using synonym mapping from "${variable_name}"`);
+          }
+        }
+
+        // Still not found → trigger web/search pipeline, persist, then answer
+        if (!fact) {
+          const researchQuery = `${entity} ${variable_name}`;
+          try {
+            await runAgent(researchQuery, [{ name: variable_name }], undefined, undefined, entity);
+          } catch {
+            // swallow; will attempt to read from DB anyway
+          }
+
+          // Try again for exact and synonyms
+          fact = await getFact(entityId, variable_name);
+          if (!fact) {
+            const synonyms = await findSimilarFactNames(entityId, variable_name);
+            for (const syn of synonyms) {
+              const f = await getFact(entityId, syn);
+              if (f) return tryReturn(f, variable_name, 'Fetched via web/search pipeline');
+            }
+          }
+        }
+
         if (!fact) {
           return JSON.stringify({
             entity,
             entity_id: entityId,
             variable_name,
-            error: 'No fact found'
+            error: 'No fact found after web search'
           });
         }
-        
-        return JSON.stringify({
-          entity,
-          entity_id: entityId,
-          variable_name: fact.name,
-          value: fact.value,
-          dtype: fact.dtype,
-          confidence: fact.confidence,
-          sources: fact.sources,
-          observed_at: fact.observed_at.toISOString(),
-          valid_from: fact.valid_from.toISOString()
-        });
+
+        return tryReturn(fact);
       }
 
       // 3️⃣ Otherwise get all facts for the entity

@@ -373,12 +373,13 @@ ${schemaText}`
     steps += 1;
     const ai = await baseModel.invoke(messages);
     messages.push(ai);
-    await history.addMessage(ai);
+    
 
 
     const toolCalls = (ai as AIMessage).tool_calls ?? [];
     if (toolCalls.length === 0) {
       // Model decided to produce a final answer; validate citations and requirements
+      await history.addMessage(ai);
       const candidate = typeof ai.content === 'string' ? ai.content : '';
       let parsed: any = null;
       try { parsed = JSON.parse(candidate); } catch {}
@@ -438,6 +439,7 @@ ${schemaText}`
       break;
     }
 
+    const pendingToolMsgs: ToolMessage[] = [];
     for (const tc of toolCalls) {
       let result: string = '';
       try {
@@ -500,7 +502,7 @@ ${schemaText}`
         content: result
       });
       messages.push(toolMsg);
-      await history.addMessage(toolMsg);
+      pendingToolMsgs.push(toolMsg);
 
       // Nudge the model to pass proper arguments if plausibility tool was misused
       if (tc.name === 'evaluate_plausibility') {
@@ -516,6 +518,12 @@ ${schemaText}`
           }
         } catch {}
       }
+    }
+
+    // Persist assistant and all tool results together, in order
+    await history.addMessage(ai);
+    for (const tm of pendingToolMsgs) {
+      await history.addMessage(tm);
     }
 
     // Nudge to produce final JSON if we're at the last step

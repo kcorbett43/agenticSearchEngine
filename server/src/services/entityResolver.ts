@@ -108,3 +108,69 @@ export async function addEntityAlias(entityId: string, alias: string): Promise<v
   }
 }
 
+/**
+ * Attempts to resolve an existing entity by exact canonical name or alias.
+ * Does not create a new entity.
+ */
+export async function tryResolveExistingEntity(name: string): Promise<{ id: string; name: string; type: string } | null> {
+  // Try canonical_name exact (case-insensitive) or alias exact match
+  const sql = `
+    SELECT id, canonical_name as name, type
+    FROM entities
+    WHERE LOWER(canonical_name) = LOWER($1)
+       OR EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(aliases) AS a(alias)
+            WHERE LOWER(a.alias) = LOWER($1)
+       )
+    LIMIT 1`;
+  try {
+    const res = await pool.query(sql, [name]);
+    if (res.rows.length > 0) return res.rows[0];
+    return null;
+  } catch {
+    // Fallback to canonical_name only if JSONB function not available
+    try {
+      const res = await pool.query(
+        `SELECT id, canonical_name as name, type FROM entities WHERE LOWER(canonical_name) = LOWER($1) LIMIT 1`,
+        [name]
+      );
+      if (res.rows.length > 0) return res.rows[0];
+    } catch {}
+    return null;
+  }
+}
+
+/**
+ * Searches for entity candidates by name similarity (pg_trgm if available; otherwise ILIKE fallback).
+ */
+export async function searchEntitiesByName(query: string, limit: number = 5): Promise<Array<{ id: string; name: string; type: string; score?: number }>> {
+  try {
+    const result = await pool.query(
+      `SELECT id, canonical_name as name, type,
+              similarity(canonical_name, $1) as score
+       FROM entities
+       WHERE similarity(canonical_name, $1) > 0.2
+       ORDER BY score DESC
+       LIMIT $2`,
+      [query, limit]
+    );
+    return result.rows.map((row: any) => ({ id: row.id, name: row.name, type: row.type, score: row.score }));
+  } catch {
+    // Fallback when pg_trgm or similarity not available
+    try {
+      const result = await pool.query(
+        `SELECT id, canonical_name as name, type
+         FROM entities
+         WHERE LOWER(canonical_name) LIKE LOWER($1)
+         ORDER BY LENGTH(canonical_name)
+         LIMIT $2`,
+        [`%${query}%`, limit]
+      );
+      return result.rows.map((row: any) => ({ id: row.id, name: row.name, type: row.type }));
+    } catch {
+      return [];
+    }
+  }
+}
+
