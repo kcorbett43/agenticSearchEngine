@@ -15,6 +15,23 @@ import { knowledgeQueryTool } from '../tools/knowledgeQuery.js';
 import { latestFinderTool } from '../tools/latestFinder.js';
 import { inferContext } from './inferenceRouter.js';
 
+type ResearchIntensity = 'low' | 'medium' | 'high';
+
+const INTENSITY_CONFIG: Record<ResearchIntensity, { maxIterations: number; maxWebSearches: number }> = {
+  low: { maxIterations: 3, maxWebSearches: 2 },
+  medium: { maxIterations: 6, maxWebSearches: 4 },
+  high: { maxIterations: 10, maxWebSearches: 8 }
+} as const;
+
+function getIntensityCaps(intensity: ResearchIntensity): { maxIterations: number; maxWebSearches: number } {
+  const base = INTENSITY_CONFIG[intensity];
+  const envMaxSteps = Number(process.env.RESEARCH_MAX_STEPS);
+  const envMaxWeb = Number(process.env.RESEARCH_MAX_WEB_SEARCHES);
+  const cappedSteps = Number.isFinite(envMaxSteps) && envMaxSteps > 0 ? Math.min(base.maxIterations, envMaxSteps) : base.maxIterations;
+  const cappedWeb = Number.isFinite(envMaxWeb) && envMaxWeb > 0 ? Math.min(base.maxWebSearches, envMaxWeb) : base.maxWebSearches;
+  return { maxIterations: cappedSteps, maxWebSearches: cappedWeb };
+}
+
 function tokenize(text: string): string[] {
   return (text || '')
     .toLowerCase()
@@ -271,7 +288,7 @@ function validateCitations(variables: MagicVariableValue[], evidencePolicy?: { m
   return { ok: issues.length === 0, issues };
 }
 
-export async function runAgent(query: string, expectedVars: MagicVariableDefinition[], sessionId?: string, username?: string, entity?: string): Promise<EnrichmentResult> {
+export async function runAgent(query: string, expectedVars: MagicVariableDefinition[], sessionId?: string, username?: string, entity?: string, researchIntensity: ResearchIntensity = 'medium'): Promise<EnrichmentResult> {
   const baseModel = getDefaultLlm()
   const { intent, target } = await classifyIntent(baseModel, query);
 
@@ -339,16 +356,24 @@ IMPORTANT: Every variable MUST include a "subject" object. The subject should be
     day: 'numeric' 
   });
 
+  const { maxIterations, maxWebSearches } = getIntensityCaps(researchIntensity);
+  const intensityNudge = researchIntensity === 'low'
+    ? '- Intensity: Low. Be frugal with external tool calls; prefer quick reasoning.'
+    : researchIntensity === 'high'
+      ? '- Intensity: High. Exhaustively corroborate facts; use more external sources as needed.'
+      : '- Intensity: Medium. Balance speed with corroboration.';
+
   const system = `You are a careful research agent.
 
 Current date: ${currentDateReadable} (${currentDate}). Use this to interpret relative time references and understand what information might be outside your training data.
 
 Important: For information outside your training data cutoff or for recent/current events, you MUST gather outside information using the available tools (web_search, latest_finder, knowledge_query). Do not rely solely on your training knowledge for recent or specific factual information.
-Important: Make sure to call tools with the proper keys. These are described in the tool descriptions
+IMPORTANT: Make sure to call tools with the proper keys. These are described in the tool descriptions
 - Before consulting external sources, first check whether there are stored facts about the specific entity. If you do not have an entity name yet, skip internal knowledge and search externally instead.
 - Search the web only when needed (for missing or more recent information).
 - Reconcile conflicting sources. Prefer (recent + authoritative) over isolated social posts.
 - When you encounter conflicting claims or uncertain information, assess plausibility using common sense and world knowledge.
+${intensityNudge}
 - Before searching the web, ensure the query directly contains key terms from the user's request/entity/expected variables. Do NOT search for generic placeholders (e.g., "input", "query"). If you cannot formulate a relevant query, do not search.
 - If evidence conflicts, lower confidence and summarize the disagreement.
 - Citations-required: For every factual variable, include at least ${routerOut.evidencePolicy.minCorroboration} source${routerOut.evidencePolicy.minCorroboration > 1 ? 's' : ''}. For date/number/string, prefer at least two agreeing authoritative sources.${routerOut.evidencePolicy.requireAuthority ? ' Require at least one high-authority source (Wikidata, Wikipedia, SEC, company site, major news).' : ''}
@@ -386,8 +411,9 @@ ${schemaText}`
   const messages: any[] = [new SystemMessage(system), ...(await history.getMessages()), intro];
 
   let webResults: { title?: string; url: string; snippet?: string; content?: string }[] = [];
-  const MAX_STEPS = Number(process.env.RESEARCH_MAX_STEPS || 6);
+  const MAX_STEPS = maxIterations;
   let steps = 0;
+  let webSearchCount = 0;
   let finalRaw = '';
   const relevantTokens = buildRelevantTokens(query, expectedVars, routerOut, entity, target);
 
@@ -480,8 +506,16 @@ ${schemaText}`
           const guard = isIrrelevantWebQuery(proposed, relevantTokens);
           if (guard.irrelevant) {
             result = JSON.stringify({ error: 'Blocked irrelevant web_search', query: proposed, reason: guard.reason });
+          } else if (webSearchCount >= maxWebSearches) {
+            result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
           } else {
             result = String(await webSearchTool.invoke(argsStr));
+            try {
+              const maybeErr = JSON.parse(result);
+              if (!maybeErr || !maybeErr.error) webSearchCount += 1;
+            } catch {
+              webSearchCount += 1;
+            }
           }
           try {
             const parsed = JSON.parse(result);
@@ -504,7 +538,17 @@ ${schemaText}`
         } else if (tc.name === 'latest_finder') {
           console.log("latest_finder");
           console.log(argsStr);
-          result = String(await latestFinderTool.invoke(argsStr));
+          if (webSearchCount >= maxWebSearches) {
+            result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
+          } else {
+            result = String(await latestFinderTool.invoke(argsStr));
+            try {
+              const maybeErr = JSON.parse(result);
+              if (!maybeErr || !maybeErr.error) webSearchCount += 1;
+            } catch {
+              webSearchCount += 1;
+            }
+          }
           console.log(result);
         } else {
           result = JSON.stringify({ error: `Unknown tool: ${tc.name}` });

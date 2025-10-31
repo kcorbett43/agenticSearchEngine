@@ -34,6 +34,7 @@ export function App() {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [researchIntensity, setResearchIntensity] = useState<'low' | 'medium' | 'high'>('medium');
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const sessionId = useMemo(() => {
@@ -87,7 +88,7 @@ export function App() {
       const res = await fetch(`${API_URL}/api/enrich`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: trimmed, sessionId })
+        body: JSON.stringify({ query: trimmed, sessionId, researchIntensity })
       });
       if (!res.ok) throw new Error('Request failed');
       const json = (await res.json()) as Result;
@@ -151,6 +152,16 @@ export function App() {
           disabled={sending}
           aria-label="Chat input"
         />
+        <select
+          aria-label="Research intensity"
+          value={researchIntensity}
+          onChange={(e) => setResearchIntensity(e.target.value as 'low' | 'medium' | 'high')}
+          disabled={sending}
+        >
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
         <button type="submit" disabled={sending || input.trim().length === 0} aria-label="Send message">
           {sending ? 'Sending…' : 'Send'}
         </button>

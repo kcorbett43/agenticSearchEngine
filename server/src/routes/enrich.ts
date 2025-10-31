@@ -19,6 +19,7 @@ const EnrichRequestSchema = z.object({
   sessionId: z.string().min(1).optional(),
   username: z.string().min(1).optional(),
   entity: z.string().min(1).optional(),
+  researchIntensity: z.enum(['low', 'medium', 'high']).optional(),
   corrections: z
     .array(
       z.object({
@@ -58,7 +59,8 @@ enrichRouter.post('/', async (req, res) => {
       parsed.data.variables ?? [],
       parsed.data.sessionId,
       parsed.data.username,
-      parsed.data.entity
+      parsed.data.entity,
+      parsed.data.researchIntensity ?? 'medium'
     );
     res.json(result);
   } catch (err) {
