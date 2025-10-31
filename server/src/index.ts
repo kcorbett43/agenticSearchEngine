@@ -2,8 +2,16 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { enrichRouter } from './routes/enrich.js';
+import { pool } from './services/db.js';
 
 dotenv.config({ path: process.env.NODE_ENV === 'production' ? '.env' : '../.env' });
+
+// Test database connection
+pool.query('SELECT NOW()').then(() => {
+  console.log('Database connected');
+}).catch((err) => {
+  console.error('Database connection failed:', err);
+});
 
 const app = express();
 app.use(cors());

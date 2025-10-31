@@ -5,6 +5,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import { ChatPromptTemplate, MessagesPlaceholder } from '@langchain/core/prompts';
 import { RunnableWithMessageHistory } from '@langchain/core/runnables';
 import { getHistory, trimHistory } from './memory.js';
+import { addMemory } from './longTermMemory.js';
 
 function dedupeByUrl(sources: SourceAttribution[]): SourceAttribution[] {
   const seen = new Set<string>();
@@ -17,7 +18,7 @@ function dedupeByUrl(sources: SourceAttribution[]): SourceAttribution[] {
   return out;
 }
 
-export async function runEnrichment(query: string, expectedVars: MagicVariableDefinition[], sessionId?: string): Promise<EnrichmentResult> {
+export async function runEnrichment(query: string, expectedVars: MagicVariableDefinition[], sessionId?: string, username?: string): Promise<EnrichmentResult> {
   const llm = getDefaultLlm();
   const search = getDefaultSearch();
 
@@ -86,6 +87,7 @@ ${schema}`;
     { query, target: target ?? '', expectedHint, context, schema },
     { configurable: { sessionId: sid } }
   );
+  await maybeSummarizeAndPersist(sid, username);
   await trimHistory(sid);
 
   let raw: string = '';
@@ -126,5 +128,38 @@ function finalizeResult(raw: string, intent: EnrichmentResult['intent'], web: { 
     variables,
     notes: typeof parsed?.notes === 'string' ? parsed.notes : undefined
   };
+}
+
+async function maybeSummarizeAndPersist(sessionId: string, username?: string): Promise<void> {
+  try {
+    if (!username) return;
+    const history = getHistory(sessionId);
+    const messages = await history.getMessages();
+    const MAX_MESSAGES = Number(process.env.CHAT_MEMORY_WINDOW || 8);
+    if (messages.length <= MAX_MESSAGES) return;
+
+    const transcript = messages
+      .map((m: any) => `${m._getType && m._getType() === 'ai' ? 'Assistant' : 'User'}: ${typeof m.content === 'string' ? m.content : ''}`)
+      .join('\n');
+
+    const llm = getDefaultLlm();
+    const prompt = `From the following chat transcript, extract only durable user facts or preferences that will help future conversations.\nReturn 3-8 concise bullet points. Each bullet MUST be a single sentence, objective, and attributable to the user when applicable.\nIf nothing durable, return an empty list.\n\nTranscript:\n${transcript}\n\nOutput format (no markdown, newline-separated bullets):`;
+
+    const raw = await llm.complete(prompt);
+    const extracted = raw
+      .split('\n')
+      .map(s => s.trim())
+      .filter(s => s)
+      .map(s => s.replace(/^[-*]\s*/, ''))
+      .slice(0, 8);
+
+    for (const fact of extracted) {
+      if (fact.length >= 5 && fact.length <= 300) {
+        await addMemory(username, fact, ['summary']);
+      }
+    }
+  } catch (e) {
+    // swallow summarization errors to avoid breaking main flow
+  }
 }
 
