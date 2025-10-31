@@ -11,7 +11,6 @@ import { resolveEntity } from './entityResolver.js';
 import { z } from 'zod';
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import { plausibilityCheckTool } from '../tools/plausibilityCheck.js';
-import { apifySearchTool } from '../tools/apifySearch.js';
 import { knowledgeQueryTool } from '../tools/knowledgeQuery.js';
 import { inferContext } from './inferenceRouter.js';
 
@@ -332,6 +331,7 @@ IMPORTANT: Every variable MUST include a "subject" object. The subject should be
 
   const system = `You are a careful research agent.
 - Before searching the web, use knowledge_query to check if we already have stored facts about the entity. IMPORTANT: Only call knowledge_query if you have a specific entity name. Pass JSON like {"entity": "Company Name"} or just the entity name as a string. If you don't have an entity name yet, skip knowledge_query and use web_search instead.
+- Use apify_search when you need to find information about Apify platform features, Actors, SDK, API documentation, tutorials, or examples. This tool searches Apify's documentation specifically.
 - Search the web only when needed (when knowledge_query doesn't have the answer or you need more recent information).
 - Reconcile conflicting sources. Prefer (recent + authoritative) over isolated social posts.
 - When you encounter conflicting claims or uncertain information, use the evaluate_plausibility tool to assess which claims are more plausible using common sense and world knowledge.
@@ -473,18 +473,6 @@ ${schemaText}`
           console.log("evaluate_plausability");
           result = String(await plausibilityCheckTool.invoke(argsStr));
           console.log(result)
-        } else if (tc.name === 'apify_search') {
-          console.log("apify_search");
-          result = String(await apifySearchTool.invoke(argsStr));
-          console.log(result);
-          try {
-              const parsed = JSON.parse(result);
-              if (Array.isArray(parsed)){
-                webResults = [...webResults, ...parsed];
-              }
-          } catch {
-              // ignore parse issues
-          }
         } else if (tc.name === 'knowledge_query') {
           console.log("knowledge_query");
           result = String(await knowledgeQueryTool.invoke(argsStr));
