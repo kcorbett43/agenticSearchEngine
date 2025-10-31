@@ -47,6 +47,7 @@ Consider:
 - Whether claims seem like jokes, satire, or hoaxes
 - Whether claims align with normal business/life patterns
 - If multiple claims conflict, which is more plausible?
+- Do all entities line up correctly or is there ambiguity?
 
 Return JSON: {"evaluations": [{"claim": string, "plausible": boolean, "confidence": 0-1, "reasoning": string}]}`;
     

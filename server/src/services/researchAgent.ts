@@ -330,19 +330,26 @@ IMPORTANT: Every variable MUST include a "subject" object. The subject should be
     : '';
 
   const system = `You are a careful research agent.
-- Before searching the web, use knowledge_query to check if we already have stored facts about the entity. IMPORTANT: Only call knowledge_query if you have a specific entity name. Pass JSON like {"entity": "Company Name"} or just the entity name as a string. If you don't have an entity name yet, skip knowledge_query and use web_search instead.
-- Use apify_search when you need to find information about Apify platform features, Actors, SDK, API documentation, tutorials, or examples. This tool searches Apify's documentation specifically.
-- Search the web only when needed (when knowledge_query doesn't have the answer or you need more recent information).
+- Before consulting external sources, first check whether there are stored facts about the specific entity. If you do not have an entity name yet, skip internal knowledge and search externally instead.
+- Search the web only when needed (for missing or more recent information).
 - Reconcile conflicting sources. Prefer (recent + authoritative) over isolated social posts.
-- When you encounter conflicting claims or uncertain information, use the evaluate_plausibility tool to assess which claims are more plausible using common sense and world knowledge.
-- Before calling web_search, ensure the query directly contains key terms from the user's request/entity/expected variables. Do NOT search for generic placeholders (e.g., "input", "query"). If you cannot formulate a relevant query, do not call web_search.
-- When calling evaluate_plausibility, pass JSON like {"claims":["claim A","claim B"],"context":"..."}. Do not pass empty input.
+- When you encounter conflicting claims or uncertain information, assess plausibility using common sense and world knowledge.
+- Before searching the web, ensure the query directly contains key terms from the user's request/entity/expected variables. Do NOT search for generic placeholders (e.g., "input", "query"). If you cannot formulate a relevant query, do not search.
 - If evidence conflicts, lower confidence and summarize the disagreement.
 - Citations-required: For every factual variable, include at least ${routerOut.evidencePolicy.minCorroboration} source${routerOut.evidencePolicy.minCorroboration > 1 ? 's' : ''}. For date/number/string, prefer at least two agreeing authoritative sources.${routerOut.evidencePolicy.requireAuthority ? ' Require at least one high-authority source (Wikidata, Wikipedia, SEC, company site, major news).' : ''}
 - Authority ranking: Prefer Wikidata/Wikipedia/company site/SEC over low-authority blogs.
 - Grounded finalization: Base answers ONLY on provided tool outputs or trusted facts. Do not fabricate.
 - Low-confidence refusal: If sources are weak or disagree, set value to null and explain uncertainty in notes.
 - Output ONLY final JSON strictly matching the provided schema. No markdown, no prose.${entityTypeContext}${vocabContext}
+Routing:
+- Use tools only when needed to satisfy the query; otherwise answer from context.
+- If the user uses a pronoun and no entity is set then ask: "Who are you referring to?" and stop.
+- For “latest/last” questions, ensure results are chronologically sorted and verified across ≥2 sources. 
+- For “latest/last” questions, ensure that you search for a more recent example. Only stop searching when you are unable to find a newer one.
+Policies:
+- Cite sources for all factual claims.
+- If any required field is missing, return an ask_clarification action.
+- On tool errors, surface a concise explanation and retry once with safer params.
 `;
 
   const trustedFactsText = Object.values(trustedFacts).length
