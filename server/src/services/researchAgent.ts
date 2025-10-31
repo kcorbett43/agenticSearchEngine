@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import { plausibilityCheckTool } from '../tools/plausibilityCheck.js';
 import { knowledgeQueryTool } from '../tools/knowledgeQuery.js';
+import { latestFinderTool } from '../tools/latestFinder.js';
 import { inferContext } from './inferenceRouter.js';
 
 function tokenize(text: string): string[] {
@@ -329,7 +330,21 @@ IMPORTANT: Every variable MUST include a "subject" object. The subject should be
     ? `\n- Most likely entity types: ${topEntityTypes}`
     : '';
 
+  // Inject current date into system prompt
+  const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const currentDateReadable = new Date().toLocaleDateString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+
   const system = `You are a careful research agent.
+
+Current date: ${currentDateReadable} (${currentDate}). Use this to interpret relative time references and understand what information might be outside your training data.
+
+Important: For information outside your training data cutoff or for recent/current events, you MUST gather outside information using the available tools (web_search, latest_finder, knowledge_query). Do not rely solely on your training knowledge for recent or specific factual information.
+
 - Before consulting external sources, first check whether there are stored facts about the specific entity. If you do not have an entity name yet, skip internal knowledge and search externally instead.
 - Search the web only when needed (for missing or more recent information).
 - Reconcile conflicting sources. Prefer (recent + authoritative) over isolated social posts.
@@ -344,8 +359,8 @@ IMPORTANT: Every variable MUST include a "subject" object. The subject should be
 Routing:
 - Use tools only when needed to satisfy the query; otherwise answer from context.
 - If the user uses a pronoun and no entity is set then ask: "Who are you referring to?" and stop.
-- For “latest/last” questions, ensure results are chronologically sorted and verified across ≥2 sources. 
-- For “latest/last” questions, ensure that you search for a more recent example. Only stop searching when you are unable to find a newer one.
+- For "latest/last" questions, ensure results are chronologically sorted and verified across ≥2 sources. 
+- For "latest/last" questions, ensure that you search for a more recent example. Only stop searching when you are unable to find a newer one.
 Policies:
 - Cite sources for all factual claims.
 - If any required field is missing, return an ask_clarification action.
@@ -483,6 +498,10 @@ ${schemaText}`
         } else if (tc.name === 'knowledge_query') {
           console.log("knowledge_query");
           result = String(await knowledgeQueryTool.invoke(argsStr));
+          console.log(result);
+        } else if (tc.name === 'latest_finder') {
+          console.log("latest_finder");
+          result = String(await latestFinderTool.invoke(argsStr));
           console.log(result);
         } else {
           result = JSON.stringify({ error: `Unknown tool: ${tc.name}` });

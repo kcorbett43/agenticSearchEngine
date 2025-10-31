@@ -5,11 +5,12 @@ import type { BaseMessage } from '@langchain/core/messages';
 import { webSearchTool } from '../tools/webSearch.js';
 import { plausibilityCheckTool } from '../tools/plausibilityCheck.js';
 import { knowledgeQueryTool } from '../tools/knowledgeQuery.js';
+import { latestFinderTool } from '../tools/latestFinder.js';
 
 export type LlmProvider = Runnable<BaseMessage[], BaseMessage>;
 
 export function getDefaultLlm(): LlmProvider {
-  const tools = [webSearchTool, plausibilityCheckTool, knowledgeQueryTool];
+  const tools = [webSearchTool, plausibilityCheckTool, knowledgeQueryTool, latestFinderTool];
   return createOpenAiToolModel(tools);
 }
 

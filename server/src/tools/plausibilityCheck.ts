@@ -4,11 +4,16 @@ import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 
 export const plausibilityCheckTool = new DynamicTool({
   name: 'evaluate_plausibility',
-  description: `Evaluate the plausibility of conflicting claims or uncertain information. Use this when you encounter conflicting sources or claims that seem unusual. Input MUST be JSON with:
-  - "claims": array of claim strings (or use "claim" for a single string)
-  - "context": optional string with research context
+  description: `Evaluate the plausibility of conflicting claims or uncertain information. Use this when you encounter conflicting sources or claims that seem unusual.
 
-  Returns JSON with plausibility scores and reasoning for each claim.`,
+IMPORTANT: Input MUST be valid JSON with:
+- "claims": array of claim strings (REQUIRED) - At least one claim to evaluate. Example: ["claim A", "claim B"]
+- "context": string (optional) - Additional research context that helps evaluate the claims
+
+Example: {"claims":["Company X was acquired in 2024","Company X was acquired in 2023"],"context":"Multiple sources conflict on acquisition date"}
+Alternative: If only one claim, you can use {"claim":"single claim string","context":"..."} which will be converted to an array.
+
+Do NOT call this tool without providing at least one claim. Returns JSON with plausibility scores and reasoning for each claim.`,
   func: async (input: string) => {
     let claims: string[] = [];
     let context = '';
