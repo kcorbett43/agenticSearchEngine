@@ -74,6 +74,7 @@ Return JSON: {"evaluations": [{"claim": string, "plausible": boolean, "confidenc
         return jsonMatch[0];
       }
     } catch {}
+    console.log(content);
     
     return content;
   }

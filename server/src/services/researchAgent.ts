@@ -344,7 +344,7 @@ IMPORTANT: Every variable MUST include a "subject" object. The subject should be
 Current date: ${currentDateReadable} (${currentDate}). Use this to interpret relative time references and understand what information might be outside your training data.
 
 Important: For information outside your training data cutoff or for recent/current events, you MUST gather outside information using the available tools (web_search, latest_finder, knowledge_query). Do not rely solely on your training knowledge for recent or specific factual information.
-
+Important: Make sure to call tools with the proper keys. These are described in the tool descriptions
 - Before consulting external sources, first check whether there are stored facts about the specific entity. If you do not have an entity name yet, skip internal knowledge and search externally instead.
 - Search the web only when needed (for missing or more recent information).
 - Reconcile conflicting sources. Prefer (recent + authoritative) over isolated social posts.
@@ -493,10 +493,12 @@ ${schemaText}`
           }
         } else if (tc.name === 'evaluate_plausibility') {
           console.log("evaluate_plausability");
+          console.log(argsStr);
           result = String(await plausibilityCheckTool.invoke(argsStr));
           console.log(result)
         } else if (tc.name === 'knowledge_query') {
           console.log("knowledge_query");
+          console.log(argsStr);
           result = String(await knowledgeQueryTool.invoke(argsStr));
           console.log(result);
         } else if (tc.name === 'latest_finder') {
