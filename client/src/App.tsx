@@ -189,6 +189,58 @@ function MessageItem({ message }: { message: ChatMessage }) {
   );
 }
 
+function formatVarValue(value: unknown): string {
+  // Handle arrays of link objects (e.g., {title, url}[])
+  if (Array.isArray(value)) {
+    const arr = value as any[];
+    // Check if it's an array of objects with url property (link-like objects)
+    if (arr.length > 0 && arr.every((item: any) => item && typeof item === 'object' && ('url' in item))) {
+      return arr
+        .slice(0, 10) // Limit to first 10 items
+        .map((item: any) => {
+          const title = typeof item.title === 'string' ? item.title.trim() : '';
+          const url = String(item.url ?? '').trim();
+          if (title && url) {
+            return `- ${title} — ${url}`;
+          } else if (url) {
+            return `- ${url}`;
+          } else if (title) {
+            return `- ${title}`;
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+    // Handle arrays of simple values
+    if (arr.every((item: any) => typeof item !== 'object')) {
+      return arr.join(', ');
+    }
+    // Fallback for other arrays
+    return JSON.stringify(value);
+  }
+  
+  // Handle single link objects
+  if (value && typeof value === 'object') {
+    const obj = value as any;
+    if ('url' in obj) {
+      const title = typeof obj.title === 'string' ? obj.title.trim() : '';
+      const url = String(obj.url ?? '').trim();
+      if (title && url) {
+        return `${title} — ${url}`;
+      } else if (url) {
+        return url;
+      } else if (title) {
+        return title;
+      }
+    }
+    // Fallback for other objects
+    return JSON.stringify(value);
+  }
+  
+  return String(value);
+}
+
 function renderAssistantText(result: Result): string {
   const lines: string[] = [];
   const vars = Array.isArray(result.variables) ? result.variables.slice(0, 5) : [];
@@ -203,7 +255,7 @@ function renderAssistantText(result: Result): string {
     const extras = vars.filter(v => v !== boolVar);
     for (const v of extras) {
       const label = v.name.replace(/_/g, ' ');
-      const valueStr = typeof v.value === 'object' ? JSON.stringify(v.value) : String(v.value);
+      const valueStr = formatVarValue(v.value);
       lines.push(`${label.charAt(0).toUpperCase() + label.slice(1)}: ${valueStr}`);
       const s = v.sources?.[0];
       if (s?.url) lines.push(`  Source: ${s.title ?? ''} ${s.url}`.trim());
@@ -214,7 +266,7 @@ function renderAssistantText(result: Result): string {
   if (result.intent === 'specific' && vars.length) {
     for (const v of vars) {
       const label = v.name.replace(/_/g, ' ');
-      const valueStr = typeof v.value === 'object' ? JSON.stringify(v.value) : String(v.value);
+      const valueStr = formatVarValue(v.value);
       lines.push(`${label.charAt(0).toUpperCase() + label.slice(1)}: ${valueStr}`);
       const src = v.sources?.[0];
       if (src?.url) lines.push(`  Source: ${src.title ?? ''} ${src.url}`.trim());
@@ -236,7 +288,7 @@ function renderAssistantText(result: Result): string {
 
   for (const v of vars) {
     const label = v.name.replace(/_/g, ' ');
-    const valueStr = typeof v.value === 'object' ? JSON.stringify(v.value) : String(v.value);
+    const valueStr = formatVarValue(v.value);
     lines.push(`${label.charAt(0).toUpperCase() + label.slice(1)}: ${valueStr}`);
   }
   if (!lines.length && result.notes) lines.push(result.notes);
