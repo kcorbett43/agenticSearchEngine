@@ -43,27 +43,8 @@ async function writeFactsIndex(idx: FactsIndex): Promise<void> {
   await fs.writeFile(FACTS_PATH, json, 'utf-8');
 }
 
-async function ensureTable(): Promise<void> {
-  try {
-    await pool.query(
-      `CREATE TABLE IF NOT EXISTS trusted_facts (
-        entity      text        NOT NULL,
-        field       text        NOT NULL,
-        value       jsonb,
-        source      text,
-        updated_at  timestamptz NOT NULL DEFAULT now(),
-        updated_by  text,
-        PRIMARY KEY (entity, field)
-      )`
-    );
-  } catch {
-    // ignore; fallback to file will handle if DB unavailable
-  }
-}
-
 export async function getTrustedFact(entity: string, field: string): Promise<TrustedFact | undefined> {
   try {
-    await ensureTable();
     const res = await pool.query(
       'SELECT entity, field, value, source, updated_at AS "updatedAt", updated_by AS "updatedBy" FROM trusted_facts WHERE entity = $1 AND field = $2',
       [entity, field]
@@ -94,7 +75,6 @@ export async function setTrustedFact(params: {
   const { entity, field, value, source, updatedBy } = params;
   const updatedAt = new Date().toISOString();
   try {
-    await ensureTable();
     const res = await pool.query(
       `INSERT INTO trusted_facts (entity, field, value, source, updated_at, updated_by)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -124,7 +104,6 @@ export async function setTrustedFact(params: {
 
 export async function getTrustedFactsForEntity(entity: string): Promise<Record<string, TrustedFact>> {
   try {
-    await ensureTable();
     const res = await pool.query(
       'SELECT entity, field, value, source, updated_at AS "updatedAt", updated_by AS "updatedBy" FROM trusted_facts WHERE entity = $1',
       [entity]

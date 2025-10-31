@@ -155,10 +155,23 @@ export function App() {
 function MessageItem({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const ts = new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  
+  // Convert URLs in content to clickable links
+  const formatContent = (text: string) => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const parts = text.split(urlRegex);
+    return parts.map((part, i) => {
+      if (urlRegex.test(part)) {
+        return <a key={i} href={part} target="_blank" rel="noopener noreferrer">{part}</a>;
+      }
+      return <span key={i}>{part}</span>;
+    });
+  };
+  
   return (
     <div className={isUser ? 'msg-row user' : 'msg-row assistant'}>
       <div className="bubble">
-        <div className="content">{message.content}</div>
+        <div className="content">{formatContent(message.content)}</div>
         <div className="footer">
           <span className="muted">{ts}{message.status === 'error' ? ' · error' : ''}</span>
         </div>
@@ -173,7 +186,8 @@ function renderAssistantText(result: Result): string {
 
   const boolVar = vars.find(v => typeof v.value === 'boolean');
   if (result.intent === 'boolean' && boolVar) {
-    lines.push(boolVar.value ? 'Yes.' : 'No.');
+    const label = boolVar.name.replace(/_/g, ' ');
+    lines.push(`${label.charAt(0).toUpperCase() + label.slice(1)}: ${boolVar.value ? 'Yes.' : 'No.'}`);
     const src = boolVar.sources?.[0];
     if (src?.url) lines.push(`Source: ${src.title ?? ''} ${src.url}`.trim());
 
