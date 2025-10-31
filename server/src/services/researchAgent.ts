@@ -6,8 +6,44 @@ import { webSearchTool } from '../tools/webSearch.js';
 import { ChatOpenAI } from '@langchain/openai';
 import { getHistory, trimHistory } from './memory.js';
 import { addMemory } from './longTermMemory.js';
+import { getTrustedFactsForEntity } from './factsStore.js';
 import { z } from 'zod';
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
+import { plausibilityCheckTool } from '../tools/plausibilityCheck.js';
+import { inferContext } from './inferenceRouter.js';
+
+function tokenize(text: string): string[] {
+  return (text || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean);
+}
+
+function buildRelevantTokens(userQuery: string, expectedVars: MagicVariableDefinition[], routerOut: any, entity?: string, target?: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const t of tokenize(userQuery)) tokens.add(t);
+  if (entity) for (const t of tokenize(entity)) tokens.add(t);
+  if (target) for (const t of tokenize(target)) tokens.add(t);
+  for (const v of expectedVars) for (const t of tokenize(v.name)) tokens.add(t);
+  if (routerOut?.vocabHints?.boost) {
+    for (const term of routerOut.vocabHints.boost) {
+      for (const t of tokenize(term)) tokens.add(t);
+    }
+  }
+  return tokens;
+}
+
+function isIrrelevantWebQuery(proposedQuery: string, relevant: Set<string>): { irrelevant: boolean; reason?: string } {
+  const q = (proposedQuery || '').trim();
+  if (!q) return { irrelevant: true, reason: 'empty query' };
+  const stop = new Set(['input','query','search','pipeline','title','url','link']);
+  if (stop.has(q.toLowerCase())) return { irrelevant: true, reason: `placeholder term: ${q}` };
+  const qTokens = tokenize(q);
+  if (qTokens.length < 2) return { irrelevant: true, reason: 'too few informative tokens' };
+  const overlap = qTokens.some(t => relevant.has(t));
+  if (!overlap) return { irrelevant: true, reason: 'no overlap with user/task vocabulary' };
+  return { irrelevant: false };
+}
 
 function dedupeByUrl(sources: SourceAttribution[]): SourceAttribution[] {
   const seen = new Set<string>();
@@ -18,6 +54,34 @@ function dedupeByUrl(sources: SourceAttribution[]): SourceAttribution[] {
     out.push(s);
   }
   return out;
+}
+
+function getAuthorityScore(url: string): number {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    if (host.endsWith('sec.gov')) return 100;
+    if (host.endsWith('wikidata.org')) return 90;
+    if (host.endsWith('wikipedia.org')) return 85;
+    if (host.endsWith('.gov')) return 80;
+    if (host.endsWith('.edu')) return 75;
+    if (host.endsWith('bloomberg.com')) return 74;
+    if (host.endsWith('reuters.com')) return 73;
+    if (host.endsWith('ft.com') || host.endsWith('ftacademy.cn')) return 72;
+    if (host.endsWith('nytimes.com') || host.endsWith('wsj.com')) return 71;
+    if (
+      host.startsWith('www.') &&
+      !host.endsWith('blogspot.com') &&
+      !host.endsWith('wordpress.com')
+    ) return 65; // likely company site or established org
+    return 50;
+  } catch {
+    return 0;
+  }
+}
+
+function sortSourcesByAuthority(sources: SourceAttribution[]): SourceAttribution[] {
+  return [...sources].sort((a, b) => getAuthorityScore(b.url) - getAuthorityScore(a.url));
 }
 
 const EnrichmentSchema = z.object({
@@ -36,7 +100,7 @@ const EnrichmentSchema = z.object({
   notes: z.string().nullable()
 });
 
-function finalizeResult(raw: string, intent: EnrichmentResult['intent'], web: { title?: string; url: string; snippet?: string }[]): EnrichmentResult {
+function finalizeResult(raw: string, intent: EnrichmentResult['intent'], web: { title?: string; url: string; snippet?: string; content?: string }[]): EnrichmentResult {
   let parsed: any;
   try {
     parsed = JSON.parse(raw);
@@ -49,16 +113,16 @@ function finalizeResult(raw: string, intent: EnrichmentResult['intent'], web: { 
   for (const v of variables) {
     if (typeof v.confidence !== 'number' || v.confidence < 0 || v.confidence > 1) v.confidence = 0.5;
     if (!Array.isArray(v.sources)) v.sources = [];
-    v.sources = dedupeByUrl(v.sources);
+    v.sources = sortSourcesByAuthority(dedupeByUrl(v.sources));
   }
 
   if (variables.length === 0) {
     variables.push({
       name: 'context',
       type: 'text',
-      value: web.map(r => `${r.title ?? r.url}: ${r.snippet ?? ''}`).join('\n'),
+      value: web.map((r: any) => `${r.title ?? r.url}:\n${(r.content ?? r.snippet ?? '').trim()}`).join('\n\n'),
       confidence: 0.4,
-      sources: web.map(r => ({ title: r.title, url: r.url, snippet: r.snippet }))
+      sources: web.map((r: any) => ({ title: r.title, url: r.url, snippet: (r.content ?? r.snippet) ? String(r.content ?? r.snippet).slice(0, 1000) : undefined }))
     });
   }
 
@@ -121,9 +185,43 @@ Output format (no markdown, newline-separated bullets):`);
   }
 }
 
-export async function runAgent(query: string, expectedVars: MagicVariableDefinition[], sessionId?: string, username?: string): Promise<EnrichmentResult> {
+function needsTwoAgreeingSources(variable: MagicVariableValue): boolean {
+  const type = variable.type;
+  const name = variable.name.toLowerCase();
+  if (type === 'date' || type === 'number' || type === 'string') return true;
+  if (name.includes('found') && name.includes('date')) return true;
+  return false;
+}
+
+function validateCitations(variables: MagicVariableValue[], evidencePolicy?: { minCorroboration: number; requireAuthority: boolean }): { ok: boolean; issues: string[] } {
+  const issues: string[] = [];
+  const minCorroboration = evidencePolicy?.minCorroboration ?? 1;
+  const requireAuthority = evidencePolicy?.requireAuthority ?? false;
+  
+  for (const v of variables) {
+    const srcCount = Array.isArray(v.sources) ? v.sources.length : 0;
+    if (srcCount < minCorroboration) {
+      issues.push(`Variable "${v.name}" requires at least ${minCorroboration} source${minCorroboration > 1 ? 's' : ''}.`);
+    }
+    if (needsTwoAgreeingSources(v) && srcCount < 2) {
+      issues.push(`Variable "${v.name}" requires at least two agreeing sources (date/number/string).`);
+    }
+    if (requireAuthority && srcCount > 0) {
+      const hasAuthority = v.sources.some(s => getAuthorityScore(s.url) >= 70);
+      if (!hasAuthority) {
+        issues.push(`Variable "${v.name}" requires at least one high-authority source (authority score >= 70).`);
+      }
+    }
+  }
+  return { ok: issues.length === 0, issues };
+}
+
+export async function runAgent(query: string, expectedVars: MagicVariableDefinition[], sessionId?: string, username?: string, entity?: string): Promise<EnrichmentResult> {
   const baseModel = getDefaultLlm()
   const { intent, target } = await classifyIntent(baseModel, query);
+
+  // Run inference router to get priors and constraints
+  const routerOut = await inferContext({ query, expectedVars, entity });
 
   const schemaText = `
 {
@@ -145,13 +243,41 @@ export async function runAgent(query: string, expectedVars: MagicVariableDefinit
   const sid = sessionId || 'default_research';
   const history = getHistory(sid);
 
+  const trustedFacts = entity ? await getTrustedFactsForEntity(entity) : {};
+
+  // Build entity type context from router priors
+  const topEntityTypes = Object.entries(routerOut.entityTypePrior)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .filter(([_, prob]) => prob > 0.1)
+    .map(([type, prob]) => `${type} (${(prob * 100).toFixed(0)}%)`)
+    .join(', ');
+  
+  const vocabContext = routerOut.vocabHints.boost.length > 0
+    ? `\n- Contextual vocabulary hints: Boost relevance for terms like: ${routerOut.vocabHints.boost.join(', ')}`
+    : '';
+  
+  const entityTypeContext = topEntityTypes
+    ? `\n- Most likely entity types: ${topEntityTypes}`
+    : '';
+
   const system = `You are a careful research agent.
 - Search the web only when needed.
 - Reconcile conflicting sources. Prefer (recent + authoritative) over isolated social posts.
-- Detect satire/April Fools/jokes and downweight them.
+- When you encounter conflicting claims or uncertain information, use the evaluate_plausibility tool to assess which claims are more plausible using common sense and world knowledge.
+- Before calling web_search, ensure the query directly contains key terms from the user's request/entity/expected variables. Do NOT search for generic placeholders (e.g., "input", "query"). If you cannot formulate a relevant query, do not call web_search.
+- When calling evaluate_plausibility, pass JSON like {"claims":["claim A","claim B"],"context":"..."}. Do not pass empty input.
 - If evidence conflicts, lower confidence and summarize the disagreement.
-- Output ONLY final JSON strictly matching the provided schema. No markdown, no prose.
+- Citations-required: For every factual variable, include at least ${routerOut.evidencePolicy.minCorroboration} source${routerOut.evidencePolicy.minCorroboration > 1 ? 's' : ''} URL${routerOut.evidencePolicy.minCorroboration > 1 ? 's' : ''}. For date/number/string, prefer at least two agreeing authoritative sources.${routerOut.evidencePolicy.requireAuthority ? ' Require at least one high-authority source (Wikidata, Wikipedia, SEC, company site, major news).' : ''}
+- Authority ranking: Prefer Wikidata/Wikipedia/company site/SEC over low-authority blogs.
+- Grounded finalization: Base answers ONLY on provided tool outputs or trusted facts. Do not fabricate.
+- Low-confidence refusal: If sources are weak or disagree, set value to null and explain uncertainty in notes.
+- Output ONLY final JSON strictly matching the provided schema. No markdown, no prose.${entityTypeContext}${vocabContext}
 `;
+
+  const trustedFactsText = Object.values(trustedFacts).length
+    ? `Trusted facts provided for entity "${entity}":\n${Object.values(trustedFacts).map(f => `- ${f.field}: ${String(f.value)} (source: ${f.source ?? 'user'})`).join('\n')}`
+    : '';
 
   const intro = new HumanMessage(
     `User query: ${query}
@@ -159,30 +285,58 @@ User intent target (may be empty): ${target ?? ''}
 
 ${expectedHint}
 
+${trustedFactsText}
+
 Schema to follow for FINAL answer (no markdown, JSON only):
 ${schemaText}`
   );
 
   const messages: any[] = [new SystemMessage(system), ...(await history.getMessages()), intro];
 
-  let webResults: { title?: string; url: string; snippet?: string }[] = [];
+  let webResults: { title?: string; url: string; snippet?: string; content?: string }[] = [];
   const MAX_STEPS = Number(process.env.RESEARCH_MAX_STEPS || 6);
   let steps = 0;
   let finalRaw = '';
+  const relevantTokens = buildRelevantTokens(query, expectedVars, routerOut, entity, target);
 
   while (steps < MAX_STEPS) {
     steps += 1;
     const ai = await baseModel.invoke(messages);
     messages.push(ai);
     await history.addMessage(ai);
-    console.log(`history: ${history}`);
-    console.log(`messages: ${messages}`);
 
 
     const toolCalls = (ai as AIMessage).tool_calls ?? [];
     if (toolCalls.length === 0) {
-      // Model decided to produce a final answer
-      finalRaw = typeof ai.content === 'string' ? ai.content : '';
+      // Model decided to produce a final answer; validate citations and requirements
+      const candidate = typeof ai.content === 'string' ? ai.content : '';
+      let parsed: any = null;
+      try { parsed = JSON.parse(candidate); } catch {}
+      if (parsed && Array.isArray(parsed.variables)) {
+        // Filter variables based on attribute constraints
+        const allowedVars = (parsed.variables as MagicVariableValue[]).filter(v => {
+          const constraint = routerOut.attrConstraints[v.name];
+          return constraint !== 'forbidden';
+        });
+        
+        // Update parsed variables to only include allowed ones
+        parsed.variables = allowedVars;
+        
+        const check = validateCitations(allowedVars, routerOut.evidencePolicy);
+        if (!check.ok && steps < MAX_STEPS) {
+          const nudge = new HumanMessage(
+            `Verification gate not satisfied:\n- ${check.issues.join('\n- ')}\nIf needed, run another web_search to gather corroborating sources, then return ONLY the corrected final JSON.`
+          );
+          messages.push(nudge);
+          await history.addUserMessage(nudge.content as string);
+          // continue loop to allow tools or final correction
+          continue;
+        }
+        // Update candidate with filtered variables
+        finalRaw = JSON.stringify(parsed);
+      } else {
+        finalRaw = candidate;
+      }
       break;
     }
 
@@ -191,7 +345,22 @@ ${schemaText}`
       try {
         const argsStr = typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args ?? '');
         if (tc.name === 'web_search') {
-          result = String(await webSearchTool.invoke(argsStr));
+          // Inspect proposed query; block off-topic searches
+          let proposed = argsStr;
+          try {
+            const parsed = JSON.parse(argsStr);
+            if (typeof parsed?.query === 'string') proposed = parsed.query;
+            else if (typeof parsed?.input === 'string') proposed = parsed.input;
+            else if (typeof parsed === 'string') proposed = parsed;
+          } catch {
+            // keep argsStr
+          }
+          const guard = isIrrelevantWebQuery(proposed, relevantTokens);
+          if (guard.irrelevant) {
+            result = JSON.stringify({ error: 'Blocked irrelevant web_search', query: proposed, reason: guard.reason });
+          } else {
+            result = String(await webSearchTool.invoke(argsStr));
+          }
           try {
             const parsed = JSON.parse(result);
             if (Array.isArray(parsed)){
@@ -200,13 +369,15 @@ ${schemaText}`
           } catch {
             // ignore parse issues
           }
+        } else if (tc.name === 'evaluate_plausibility') {
+          result = String(await plausibilityCheckTool.invoke(argsStr));
         } else {
           result = JSON.stringify({ error: `Unknown tool: ${tc.name}` });
         }
       } catch (e: any) {
         result = JSON.stringify({ error: e?.message ?? 'Tool execution failed' });
       }
-      console.log(`tool call result: ${webResults}`);
+      console.log(result)
 
 
       const toolMsg = new ToolMessage({
@@ -215,6 +386,21 @@ ${schemaText}`
       });
       messages.push(toolMsg);
       await history.addMessage(toolMsg);
+
+      // Nudge the model to pass proper arguments if plausibility tool was misused
+      if (tc.name === 'evaluate_plausibility') {
+        try {
+          const parsedErr = JSON.parse(result);
+          if (parsedErr?.error === 'No claims provided') {
+            const nudge = new HumanMessage(
+              'The evaluate_plausibility tool requires JSON like {"claims":["claim A","claim B"],"context":"..."}. ' +
+              'Extract specific conflicting claims from your current sources and call evaluate_plausibility again with those claims.'
+            );
+            messages.push(nudge);
+            await history.addUserMessage(nudge.content as string);
+          }
+        } catch {}
+      }
     }
 
     // Nudge to produce final JSON if we're at the last step
@@ -236,6 +422,8 @@ ${schemaText}`
   await maybeSummarizeAndPersist(sid, username);
   await trimHistory(sid);
 
+
+
   // Try to validate/normalize through zod; if not valid JSON, finalizeResult handles fallback
   let normalized: string = finalRaw;
   try {
@@ -246,5 +434,21 @@ ${schemaText}`
     // not JSON, will be handled by finalize
   }
 
-  return finalizeResult(normalized, intent, webResults);
+  let result = finalizeResult(normalized, intent, webResults);
+  console.log(result);
+
+  // Apply trusted facts overrides when available
+  if (entity && Object.values(trustedFacts).length) {
+    for (const v of result.variables) {
+      const tf = (trustedFacts as any)[v.name];
+      if (tf && tf.value !== undefined) {
+        v.value = tf.value as any;
+        v.confidence = 1.0;
+        const tfSource: SourceAttribution = tf.source ? { title: undefined, url: tf.source, snippet: undefined } : { title: 'Trusted user fact', url: 'about:trusted-fact', snippet: undefined };
+        v.sources = dedupeByUrl([tfSource, ...v.sources]);
+      }
+    }
+  }
+
+  return result;
 }

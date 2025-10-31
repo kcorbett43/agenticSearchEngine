@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { runAgent } from '../services/researchAgent.js';
+import { setTrustedFact } from '../services/factsStore.js';
 
 export const enrichRouter = Router();
 
@@ -16,7 +17,18 @@ const EnrichRequestSchema = z.object({
     )
     .optional(),
   sessionId: z.string().min(1).optional(),
-  username: z.string().min(1).optional()
+  username: z.string().min(1).optional(),
+  entity: z.string().min(1).optional(),
+  corrections: z
+    .array(
+      z.object({
+        entity: z.string().min(1).optional(),
+        field: z.string().min(1),
+        value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+        source: z.string().url().optional()
+      })
+    )
+    .optional()
 });
 
 enrichRouter.post('/', async (req, res) => {
@@ -26,7 +38,28 @@ enrichRouter.post('/', async (req, res) => {
   }
 
   try {
-    const result = await runAgent(parsed.data.query, parsed.data.variables ?? [], parsed.data.sessionId, parsed.data.username);
+    // Apply any trusted fact corrections provided by the caller (feedback learning)
+    if (Array.isArray(parsed.data.corrections) && parsed.data.corrections.length > 0) {
+      const fallbackEntity = parsed.data.entity || 'global';
+      const username = parsed.data.username;
+      for (const c of parsed.data.corrections) {
+        await setTrustedFact({
+          entity: c.entity || fallbackEntity,
+          field: c.field,
+          value: c.value as any,
+          source: c.source,
+          updatedBy: username
+        });
+      }
+    }
+
+    const result = await runAgent(
+      parsed.data.query,
+      parsed.data.variables ?? [],
+      parsed.data.sessionId,
+      parsed.data.username,
+      parsed.data.entity
+    );
     res.json(result);
   } catch (err) {
     console.error(err);
