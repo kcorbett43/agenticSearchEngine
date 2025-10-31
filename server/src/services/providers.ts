@@ -1,5 +1,7 @@
 import fetch from 'node-fetch';
 import { ChatOpenAI } from '@langchain/openai';
+import type { Tool } from '@langchain/core/tools';
+import { webSearchTool } from '../tools/webSearch';
 
 export interface SearchResultItem {
   title?: string;
@@ -68,7 +70,9 @@ export function createOpenAiLlm(): LlmProvider {
   const model = new ChatOpenAI({
     model: modelName,
     temperature: 0.2,
-    apiKey
+    apiKey,
+    maxRetries: 2,
+    timeout: 60_000
   });
 
   return {
@@ -93,7 +97,24 @@ export function getDefaultSearch(): SearchProvider {
 }
 
 export function getDefaultLlm(): LlmProvider {
-  return createOpenAiLlm();
+  return createOpenAiLlm(); // Keep using non-tool version for existing code
+}
+
+export function createOpenAiToolModel(tools: Tool[]) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  const modelName = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const model = new ChatOpenAI({
+    model: modelName,
+    temperature: 0.2,
+    apiKey,
+    maxRetries: 2,
+    timeout: 60_000
+  });
+  return model.bindTools(tools);
+}
+
+export function getToolBoundModel(tools: Tool[] = [webSearchTool]) {
+  return createOpenAiToolModel(tools);
 }
 
 

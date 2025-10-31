@@ -16,9 +16,6 @@ OPENAI_API_KEY=your_openai_key
 OPENAI_MODEL=gpt-4o-mini
 SEARCH_PROVIDER=tavily
 TAVILY_API_KEY=your_tavily_key
-# or use SerpAPI instead:
-# SEARCH_PROVIDER=serpapi
-# SERPAPI_API_KEY=your_serpapi_key
 ```
 
 2. Build and start everything

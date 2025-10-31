@@ -4,6 +4,7 @@ dist/
 build/
 *.tsbuildinfo
 ideas/*
+src/dist/*
 
 .env
 .env.local

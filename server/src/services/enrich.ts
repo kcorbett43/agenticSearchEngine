@@ -6,6 +6,7 @@ import { ChatPromptTemplate, MessagesPlaceholder } from '@langchain/core/prompts
 import { RunnableWithMessageHistory } from '@langchain/core/runnables';
 import { getHistory, trimHistory } from './memory.js';
 import { addMemory } from './longTermMemory.js';
+import { z } from 'zod';
 
 function dedupeByUrl(sources: SourceAttribution[]): SourceAttribution[] {
   const seen = new Set<string>();
@@ -30,7 +31,7 @@ export async function runEnrichment(query: string, expectedVars: MagicVariableDe
   const system = `You are a careful research assistant. Use the provided web context as evidence.
 Return strictly the requested JSON schema. Include sources used.`;
 
-  const schema = `
+  const schemaText = `
 {
   "intent": "${intent}",
   "variables": [
@@ -47,6 +48,22 @@ Return strictly the requested JSON schema. Include sources used.`;
   const expectedNames = expectedVars.map(v => v.name).join(', ');
   const expectedHint = expectedNames ? `Aim to fill these variables if possible: ${expectedNames}.` : '';
 
+  const EnrichmentSchema = z.object({
+    intent: z.enum(['boolean', 'specific', 'contextual']),
+    variables: z.array(z.object({
+      name: z.string(),
+      type: z.enum(['boolean', 'string', 'number', 'date', 'url', 'text']),
+      value: z.union([z.boolean(), z.number(), z.string()]).nullable(),
+      confidence: z.number().min(0).max(1).default(0.5),
+      sources: z.array(z.object({
+        title: z.string().nullable(),
+        url: z.string(),
+        snippet: z.string().nullable()
+      })).default([])
+    })).default([]),
+    notes: z.string().nullable()
+  });
+
   // If no API key, keep stateless behavior
   if (!process.env.OPENAI_API_KEY) {
     const prompt = `${system}
@@ -59,14 +76,28 @@ ${expectedHint}
 Web context (top results):\n${context}
 
 Produce the JSON exactly matching this schema (no markdown):
-${schema}`;
+${schemaText}`;
     const raw = await llm.complete(prompt, { json: true });
-    return finalizeResult(raw, intent, web);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+      const safe = EnrichmentSchema.safeParse(parsed);
+      if (safe.success) parsed = safe.data; // normalized by zod defaults
+    } catch {
+      // fall through to existing finalize handling
+    }
+    return finalizeResult(parsed ? JSON.stringify(parsed) : raw, intent, web);
   }
 
   // With API key: use short-term memory via RunnableWithMessageHistory
   const modelName = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-  const model = new ChatOpenAI({ model: modelName, temperature: 0.2, apiKey: process.env.OPENAI_API_KEY });
+  const model = new ChatOpenAI({
+    model: modelName,
+    temperature: 0.2,
+    apiKey: process.env.OPENAI_API_KEY,
+    maxRetries: 2,
+    timeout: 60_000
+  });
 
   const promptTmpl = ChatPromptTemplate.fromMessages([
     ['system', system],
@@ -74,7 +105,8 @@ ${schema}`;
     ['human', `User query: {query}\nUser intent target (may be empty): {target}\n\n{expectedHint}\n\nWeb context (top results):\n{context}\n\nProduce the JSON exactly matching this schema (no markdown):\n{schema}`]
   ]);
 
-  const chain = promptTmpl.pipe(model);
+  const parsedModel = model.withStructuredOutput(EnrichmentSchema);
+  const chain = promptTmpl.pipe(parsedModel).withConfig({ runName: 'runEnrichment' });
   const withHistory = new RunnableWithMessageHistory({
     runnable: chain,
     getMessageHistory: (sid: string) => getHistory(sid),
@@ -84,16 +116,13 @@ ${schema}`;
 
   const sid = sessionId || 'default';
   const aiMessage: any = await withHistory.invoke(
-    { query, target: target ?? '', expectedHint, context, schema },
+    { query, target: target ?? '', expectedHint, context, schema: schemaText },
     { configurable: { sessionId: sid } }
   );
   await maybeSummarizeAndPersist(sid, username);
   await trimHistory(sid);
 
-  let raw: string = '';
-  if (typeof aiMessage?.content === 'string') raw = aiMessage.content;
-  else if (Array.isArray(aiMessage?.content)) raw = aiMessage.content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join('');
-
+  const raw = JSON.stringify(aiMessage ?? {});
   return finalizeResult(raw, intent, web);
 }
 
