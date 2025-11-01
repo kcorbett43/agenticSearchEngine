@@ -112,9 +112,7 @@ Return JSON only.`;
       }
     }
     
-    // Infer constraints from expectedVars (generic, domain-agnostic)
     for (const varDef of expectedVars) {
-      // If not already set, infer generic constraint
       if (!attrConstraints[varDef.name]) {
         attrConstraints[varDef.name] = 'allowed';
       }
@@ -154,19 +152,15 @@ Return JSON only.`;
 function inferContextHeuristic(input: InferenceRouterInput): RouterOut {
   const { expectedVars } = input;
 
-  // Neutral fallback: default to 'organization'
   const entityType: string | undefined = 'organization';
 
-  // Attribute constraints from expected vars (generic)
   const attrConstraints: Record<string, "required" | "allowed" | "forbidden"> = {};
   for (const varDef of expectedVars) {
     attrConstraints[varDef.name] = 'allowed';
   }
 
-  // Vocabulary hints (left empty in heuristic; LLM provides when available)
   const vocabHints = { boost: [] as string[], penalize: [] as string[] };
 
-  // Evidence policy (neutral defaults)
   const evidencePolicy = {
     minCorroboration: 1,
     requireAuthority: false,
