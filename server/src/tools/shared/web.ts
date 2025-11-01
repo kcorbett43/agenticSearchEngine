@@ -1,6 +1,18 @@
 import fetch from 'node-fetch';
 
-export type SearchResult = { title?: string; url: string; snippet?: string; content?: string };
+export type SearchResult = {
+  title?: string;
+  url: string;
+  snippet?: string;
+  // legacy large content field (avoided by default now)
+  content?: string;
+  // new lightweight fields preferred by the agent
+  summary?: string;
+  key_facts?: string[];
+  quotes?: string[];
+  excerpt?: string;
+  published_at?: string;
+};
 
 export function truncate(s: string, n: number) {
   if (!s) return s;

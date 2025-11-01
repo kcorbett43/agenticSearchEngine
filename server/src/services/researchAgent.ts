@@ -153,9 +153,9 @@ async function finalizeResult(
       },
       name: 'context',
       type: 'text',
-      value: web.map((r: any) => `${r.title ?? r.url}:\n${(r.content ?? r.snippet ?? '').trim()}`).join('\n\n'),
+      value: web.map((r: any) => `${r.title ?? r.url}:\n${(r.summary ?? r.snippet ?? r.excerpt ?? '').trim()}`).join('\n\n'),
       confidence: 0.4,
-      sources: web.map((r: any) => ({ title: r.title, url: r.url, snippet: (r.content ?? r.snippet) ? String(r.content ?? r.snippet).slice(0, 1000) : undefined })),
+      sources: web.map((r: any) => ({ title: r.title, url: r.url, snippet: (r.summary ?? r.snippet ?? r.excerpt) ? String(r.summary ?? r.snippet ?? r.excerpt).slice(0, 1000) : undefined })),
       observed_at: now
     });
   }

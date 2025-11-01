@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { ChatOpenAI } from '@langchain/openai';
 import { fetchHtmlAndText, tavilySearch, truncate, type SearchResult } from './shared/web';
+import { summarizeForQuery } from './shared/summarize';
 
 type LatestSource = SearchResult & { published_at?: string; credibility_score: number };
 
@@ -190,16 +191,29 @@ class LatestFinderTool extends StructuredTool {
           published = extractPublishedAt(html) || (text ? extractPublishedAt(text) : undefined);
         }
         const cred = getAuthorityScore(r.url);
-        const content = includeContent && text ? truncate(text, 8000) : undefined;
+        let summary: string | undefined;
+        let quotes: string[] | undefined;
+        let key_facts: string[] | undefined;
+        let excerpt: string | undefined;
+        if (includeContent && text) {
+          const sum = await summarizeForQuery(text, query);
+          summary = sum.summary;
+          quotes = sum.quotes;
+          key_facts = sum.key_facts;
+          excerpt = truncate(text, 1000);
+        }
 
         const enriched: LatestSource = {
           title: r.title,
           url: r.url,
           snippet: r.snippet,
-          content,
+          summary,
+          quotes,
+          key_facts,
+          excerpt,
           published_at: published ? published.toISOString() : undefined,
           credibility_score: cred
-        };
+        } as any;
         return enriched;
       }));
 
