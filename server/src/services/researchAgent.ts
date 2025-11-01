@@ -1,4 +1,3 @@
-// server/src/services/researchAgent.ts
 import { EnrichmentResult, MagicVariableDefinition, MagicVariableValue, SourceAttribution } from '../types.js';
 import { classifyIntent } from './intent.js';
 import { getDefaultLlm } from './providers.js';
@@ -515,7 +514,6 @@ ${schemaText}`
           failedToolCalls.push({ tool: toolName, args: canonArgs(argsObj), reason: 'duplicate blocked', fingerprint: fp });
         }
       } else {
-        // Execute the tool (existing logic)
         try {
           if (toolName === 'web_search') {
             console.log('web_search');
@@ -568,7 +566,6 @@ ${schemaText}`
             result = JSON.stringify({ error: `Unknown tool: ${toolName}` });
           }
           
-          // Cache the result for potential reuse
           toolResultCache.set(fp, result);
           if (isFailedOrEmptyResult(toolName, result)) {
             let reason = 'empty/failed';

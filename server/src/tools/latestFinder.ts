@@ -102,7 +102,6 @@ function parseDateLoose(s: string): Date | undefined {
   const d = new Date(s);
   if (!isNaN(d.getTime())) return d;
 
-  // Common patterns like "Oct 31, 2025" or "31 Oct 2025"
   const m = s.match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b/i)
         || s.match(/\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\b/i)
         || s.match(/\b\d{4}-\d{2}-\d{2}\b/);
@@ -114,14 +113,12 @@ function parseDateLoose(s: string): Date | undefined {
 }
 
 function extractPublishedAt(html: string): Date | undefined {
-  // JSON-LD datePublished/dateModified
   const ld = html.match(/"datePublished"\s*:\s*"([^"]+)"/i) || html.match(/"dateModified"\s*:\s*"([^"]+)"/i);
   if (ld && ld[1]) {
     const d = parseDateLoose(ld[1]);
     if (d) return d;
   }
 
-  // OpenGraph/article meta
   const meta = html.match(/<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["'][^>]*>/i)
            || html.match(/<meta[^>]+name=["']pubdate["'][^>]+content=["']([^"']+)["'][^>]*>/i)
            || html.match(/<time[^>]+datetime=["']([^"']+)["'][^>]*>/i);
@@ -130,8 +127,6 @@ function extractPublishedAt(html: string): Date | undefined {
     if (d) return d;
   }
 
-  // Fallback: scan text for a reasonable date string
-  // Keep it conservative to avoid random dates in comments
   const textWindow = html.slice(0, 20000);
   return parseDateLoose(textWindow);
 }
@@ -150,7 +145,6 @@ function withinHours(a?: Date, b?: Date, hours = 36): boolean {
 
 async function refineQueriesWithLlm(userQuery: string): Promise<string[]> {
   try {
-    // Use a lightweight model without tools to avoid circular dependency
     const apiKey = process.env.OPENAI_API_KEY;
     const modelName = process.env.OPENAI_MODEL || 'gpt-4o-mini';
     const model = new ChatOpenAI({
@@ -161,7 +155,6 @@ async function refineQueriesWithLlm(userQuery: string): Promise<string[]> {
       timeout: 30_000
     });
     
-    // Inject current date context for time-related searches
     const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
     const currentDateReadable = new Date().toLocaleDateString('en-US', { 
       weekday: 'long', 
@@ -188,7 +181,6 @@ Return JSON array like ["...", "..."].`
       if (out.length > 0) return out.slice(0, 3);
     }
   } catch {}
-  // Fallback heuristics
   const base = userQuery.replace(/\b(latest|last|newest|most recent)\b/gi, '').trim();
   return [
     `${base} latest`,
@@ -197,7 +189,6 @@ Return JSON array like ["...", "..."].`
   ];
 }
 
-// Generate description with current date
 function getLatestFinderDescription(): string {
   const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
   const currentDateReadable = new Date().toLocaleDateString('en-US', { 
@@ -226,14 +217,12 @@ class LatestFinderTool extends StructuredTool {
   }).strict();
 
   async _call(input: { query: string }): Promise<string> {
-    // Internal constants - not configurable by LLM
     const maxLoops = 5;
     const minSources = 2;
     const includeContent = true;
     const depth: 'basic' | 'advanced' = 'advanced';
     const initialDays: number | undefined = 365;
 
-    // Parse inputs - only accept query from LLM
     const query = input.query;
     if (!query || !query.trim()) {
       return JSON.stringify({ error: 'Query is required. Pass JSON: {"query":"..."}' });
@@ -244,7 +233,7 @@ class LatestFinderTool extends StructuredTool {
     }
 
     const refinedQueries = await refineQueriesWithLlm(query);
-    const allSeen: Map<string, LatestSource> = new Map(); // by URL
+    const allSeen: Map<string, LatestSource> = new Map();
     const byDomainDate: Map<string, Date> = new Map();
     let currentLatest: Date | undefined;
     let iterations = 0;
@@ -253,14 +242,12 @@ class LatestFinderTool extends StructuredTool {
       iterations += 1;
       const daysWindow = currentLatest ? Math.max(1, daysSince(currentLatest)) : (initialDays ?? 365);
 
-      // Query breadth: try up to 3 refined variants
       const candidates: SearchResult[] = [];
       for (const rq of refinedQueries) {
         const res = await tavilySearch(rq, 6, { days: daysWindow, depth });
         for (const r of res) candidates.push(r);
       }
 
-      // Fetch and date-extract for top K distinct URLs
       const seenThisRound = new Set<string>();
       const top = candidates.filter(r => {
         if (!r?.url || seenThisRound.has(r.url)) return false;
@@ -299,7 +286,6 @@ class LatestFinderTool extends StructuredTool {
           currentLatest = d;
           foundNewer = true;
         }
-        // track domain latest date
         try {
           const domain = new URL(src.url).hostname.toLowerCase();
           if (d) {
@@ -309,10 +295,8 @@ class LatestFinderTool extends StructuredTool {
         } catch {}
       }
 
-      // If we didn't find anything newer, stop
       if (!foundNewer) break;
-
-      // If latest found, ensure corroboration from distinct credible sources near that date
+      
       const latestTarget = currentLatest;
       const corroborating: LatestSource[] = [];
       const domains = new Set<string>();
@@ -330,11 +314,9 @@ class LatestFinderTool extends StructuredTool {
       }
 
       if (corroborating.length >= minSources) {
-        // We have enough credible corroboration near the latest date; do one more pass to confirm no newer
         continue;
       }
 
-      // Otherwise, refine queries heuristically for next loop
       const base = query.replace(/\b(latest|last|newest|most recent)\b/gi, '').trim();
       const plus = ['announced', 'released', 'launch', 'filed', 'acquired', 'date', 'news'];
       for (const p of plus) {
@@ -346,16 +328,13 @@ class LatestFinderTool extends StructuredTool {
         const qv = `${base} ${h}`.trim();
         if (!refinedQueries.includes(qv)) refinedQueries.push(qv);
       }
-      // Cap list size
       while (refinedQueries.length > 6) refinedQueries.pop();
     }
-
-    // Prepare final selection around the latest date with corroboration requirement
+    
     const latest = currentLatest;
     const results: LatestSource[] = [];
     const usedDomains = new Set<string>();
     if (latest) {
-      // prioritize by credibility and proximity to latest
       const sorted = Array.from(allSeen.values()).sort((a, b) => {
         const da = a.published_at ? Math.abs(new Date(a.published_at).getTime() - latest.getTime()) : 1e18;
         const db = b.published_at ? Math.abs(new Date(b.published_at).getTime() - latest.getTime()) : 1e18;
