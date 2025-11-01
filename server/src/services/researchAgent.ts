@@ -32,40 +32,6 @@ function getIntensityCaps(intensity: ResearchIntensity): { maxIterations: number
   return { maxIterations: cappedSteps, maxWebSearches: cappedWeb };
 }
 
-function tokenize(text: string): string[] {
-  return (text || '')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/i)
-    .filter(Boolean);
-}
-
-function buildRelevantTokens(userQuery: string, expectedVars: MagicVariableDefinition[], routerOut: any, entity?: string, target?: string): Set<string> {
-  const tokens = new Set<string>();
-  for (const t of tokenize(userQuery)) tokens.add(t);
-  if (entity) for (const t of tokenize(entity)) tokens.add(t);
-  if (target) for (const t of tokenize(target)) tokens.add(t);
-  for (const v of expectedVars) for (const t of tokenize(v.name)) tokens.add(t);
-  if (routerOut?.vocabHints?.boost) {
-    for (const term of routerOut.vocabHints.boost) {
-      for (const t of tokenize(term)) tokens.add(t);
-    }
-  }
-  return tokens;
-}
-
-function isIrrelevantWebQuery(proposedQuery: string, relevant: Set<string>): { irrelevant: boolean; reason?: string } {
-  return { irrelevant: true }
-  const q = (proposedQuery || '').trim();
-  if (!q) return { irrelevant: true, reason: 'empty query' };
-  const stop = new Set(['input','query','search','pipeline','title','url','link']);
-  if (stop.has(q.toLowerCase())) return { irrelevant: true, reason: `placeholder term: ${q}` };
-  const qTokens = tokenize(q);
-  if (qTokens.length < 2) return { irrelevant: true, reason: 'too few informative tokens' };
-  const overlap = qTokens.some(t => relevant.has(t));
-  if (!overlap) return { irrelevant: true, reason: 'no overlap with user/task vocabulary' };
-  return { irrelevant: false };
-}
-
 function dedupeByUrl(sources: SourceAttribution[]): SourceAttribution[] {
   const seen = new Set<string>();
   const out: SourceAttribution[] = [];
@@ -360,14 +326,13 @@ IMPORTANT CONTRACT:
 - You MUST obey tool parameter names and types exactly.
 - Do not invent parameters not in the schema.
 - If a tool call is rejected with SCHEMA_VALIDATION_ERROR, repair the call and try again.
-- Use tools sequentially; never run in parallel.
 IMPORTANT: Make sure to call tools with the proper keys. These are described in the tool descriptions
 - Before consulting external sources, first check whether there are stored facts about the specific entity. If you do not have an entity name yet, skip internal knowledge and search externally instead.
 - Search the web only when needed (for missing or more recent information).
 - Reconcile conflicting sources. Prefer (recent + authoritative) over isolated social posts.
 - When you encounter conflicting claims or uncertain information, assess plausibility using common sense and world knowledge.
 ${intensityNudge}
-- Before searching the web, ensure the query directly contains key terms from the user's request/entity/expected variables. Do NOT search for generic placeholders (e.g., "input", "query"). If you cannot formulate a relevant query, do not search.
+- You will periodically receive a "tool_outcomes" JSON from the user. Treat entries in "do_not_retry" as blocked: do not repeat those exact calls unless arguments are materially changed. Prefer calls similar to those listed in "success".
 - If evidence conflicts, lower confidence and summarize the disagreement.
 - Citations-required: For every factual variable, include at least ${routerOut.evidencePolicy.minCorroboration} source${routerOut.evidencePolicy.minCorroboration > 1 ? 's' : ''}. For date/number/string, prefer at least two agreeing authoritative sources.${routerOut.evidencePolicy.requireAuthority ? ' Require at least one high-authority source (Wikidata, Wikipedia, SEC, company site, major news).' : ''}
 - Authority ranking: Prefer Wikidata/Wikipedia/company site/SEC over low-authority blogs.
@@ -408,14 +373,60 @@ ${schemaText}`
   let steps = 0;
   let webSearchCount = 0;
   let finalRaw = '';
-  const relevantTokens = buildRelevantTokens(query, expectedVars, routerOut, entity, target);
+  
+  
+  const toolUseRegistry = new Set<string>();
+  const toolResultCache = new Map<string, string>();
+
+  function willRunTool(name: string, args: any): { allowed: boolean; fp: string } {
+    const sortedKeys = Object.keys(args).sort();
+    const sortedObj: any = {};
+    for (const key of sortedKeys) {
+      sortedObj[key] = args[key];
+    }
+    const fp = `${name}:${JSON.stringify(sortedObj)}`;
+    if (toolUseRegistry.has(fp)) {
+      return { allowed: false, fp };
+    }
+    toolUseRegistry.add(fp);
+    return { allowed: true, fp };
+  }
+
+  function canonArgs(obj: any): any {
+    const keys = Object.keys(obj || {}).sort();
+    const out: any = {};
+    for (const k of keys) out[k] = obj[k];
+    return out;
+  }
+
+  function isFailedOrEmptyResult(toolName: string, result: string): boolean {
+    if (typeof result !== 'string') return true;
+    const lower = result.toLowerCase();
+    if (lower.includes('schema_validation_error') || lower.includes('tool_execution_error')) return true;
+    if (lower.includes('error') || lower.includes('blocked') || lower.includes('limit')) return true;
+    try {
+      const parsed = JSON.parse(result);
+      if (parsed && typeof parsed === 'object' && parsed.error) return true;
+      if ((toolName === 'web_search' || toolName === 'latest_finder') && Array.isArray(parsed)) {
+        if (parsed.length === 0) return true;
+        const hasSignal = parsed.some((it: any) => it && ((it.url && it.url !== 'about:blank') || (it.title && String(it.title).trim()) || (it.snippet && String(it.snippet).trim())));
+        return !hasSignal;
+      }
+      if (toolName === 'knowledge_query') {
+        if (Array.isArray(parsed) && parsed.length === 0) return true;
+        if (typeof parsed === 'string' && (parsed.trim() === '' || parsed.toLowerCase().includes('no results'))) return true;
+      }
+    } catch {
+      if (result.trim() === '' || lower.includes('error')) return true;
+    }
+    return false;
+  }
 
   while (steps < MAX_STEPS) {
     steps += 1;
     const ai = await baseModel.invoke(messages);
     messages.push(ai);
     
-
 
     const toolCalls = (ai as AIMessage).tool_calls ?? [];
     if (toolCalls.length === 0) {
@@ -435,7 +446,7 @@ ${schemaText}`
         
         const allowedVars = (parsed.variables as any[]).filter((v: any) => {
           const constraint = routerOut.attrConstraints[v.name];
-          return constraint !== 'forbidden' && v.subject; // Must have subject
+          return constraint !== 'forbidden' && v.subject; 
         });
         
         parsed.variables = allowedVars;
@@ -474,6 +485,8 @@ ${schemaText}`
     }
 
     const pendingToolMsgs: ToolMessage[] = [];
+    const failedToolCalls: Array<{ tool: string; args: any; reason: string; fingerprint: string }> = [];
+    const successfulToolCalls: Array<{ tool: string; args: any; fingerprint: string; quality?: string }> = [];
     for (const tc of toolCalls) {
       let result: string = '';
       const toolName = String(tc.name);
@@ -483,17 +496,32 @@ ${schemaText}`
         argsObj = typeof tc.args === 'string' ? JSON.parse(tc.args) : (tc.args ?? {});
       } catch { argsObj = {}; }
 
-      try {
-        if (toolName === 'web_search') {
-          console.log('web_search');
-          try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
-          const proposed = typeof argsObj?.query === 'string' ? String(argsObj.query) : '';
-          if (proposed) {
-            const guard = isIrrelevantWebQuery(proposed, relevantTokens);
-            if (guard.irrelevant) {
-              result = JSON.stringify({ error: 'Blocked irrelevant web_search', query: proposed, reason: guard.reason });
-              console.log(result);
-            } else if (webSearchCount >= maxWebSearches) {
+      const { allowed, fp } = willRunTool(toolName, argsObj);
+      if (!allowed) {
+        const cachedResult = toolResultCache.get(fp);
+        if (cachedResult) {
+          result = cachedResult;
+          console.log(`Reusing cached result for duplicate tool call: ${toolName}`);
+          if (isFailedOrEmptyResult(toolName, result)) {
+            failedToolCalls.push({ tool: toolName, args: canonArgs(argsObj), reason: 'duplicate (cached failed/empty)', fingerprint: fp });
+          }
+        } else {
+          result = JSON.stringify({ 
+            error: 'Duplicate tool call blocked', 
+            tool: toolName, 
+            message: 'This exact tool call was already executed in this session' 
+          });
+          console.log(`Blocked duplicate tool call: ${toolName}`);
+          failedToolCalls.push({ tool: toolName, args: canonArgs(argsObj), reason: 'duplicate blocked', fingerprint: fp });
+        }
+      } else {
+        // Execute the tool (existing logic)
+        try {
+          if (toolName === 'web_search') {
+            console.log('web_search');
+            try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+            const proposed = typeof argsObj?.query === 'string' ? String(argsObj.query) : '';
+            if (proposed && webSearchCount >= maxWebSearches) {
               result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
               console.log(result);
             } else {
@@ -506,47 +534,65 @@ ${schemaText}`
                 webSearchCount += 1;
               }
             }
-          } else {
-            result = String(await webSearchTool.invoke(argsObj));
-          }
-          try {
-            const parsed = JSON.parse(result);
-            if (Array.isArray(parsed)) {
-              webResults = [...webResults, ...parsed];
-            }
-          } catch {}
-        } else if (toolName === 'evaluate_plausibility') {
-          console.log('evaluate_plausibility');
-          try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
-          result = String(await plausibilityCheckTool.invoke(argsObj));
-          try { console.log(result); } catch {}
-        } else if (toolName === 'knowledge_query') {
-          console.log('knowledge_query');
-          try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
-          result = String(await knowledgeQueryTool.invoke(argsObj));
-          try { console.log(result); } catch {}
-        } else if (toolName === 'latest_finder') {
-          console.log('latest_finder');
-          try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
-          if (webSearchCount >= maxWebSearches) {
-            result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
-          } else {
-            result = String(await latestFinderTool.invoke(argsObj));
             try {
-              const maybeErr = JSON.parse(result);
-              if (!maybeErr || !maybeErr.error) webSearchCount += 1;
-            } catch {
-              webSearchCount += 1;
+              const parsed = JSON.parse(result);
+              if (Array.isArray(parsed)) {
+                webResults = [...webResults, ...parsed];
+              }
+            } catch {}
+          } else if (toolName === 'evaluate_plausibility') {
+            console.log('evaluate_plausibility');
+            try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+            result = String(await plausibilityCheckTool.invoke(argsObj));
+            try { console.log(result); } catch {}
+          } else if (toolName === 'knowledge_query') {
+            console.log('knowledge_query');
+            try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+            result = String(await knowledgeQueryTool.invoke(argsObj));
+            try { console.log(result); } catch {}
+          } else if (toolName === 'latest_finder') {
+            console.log('latest_finder');
+            try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+            if (webSearchCount >= maxWebSearches) {
+              result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
+            } else {
+              result = String(await latestFinderTool.invoke(argsObj));
+              try {
+                const maybeErr = JSON.parse(result);
+                if (!maybeErr || !maybeErr.error) webSearchCount += 1;
+              } catch {
+                webSearchCount += 1;
+              }
             }
+          } else {
+            result = JSON.stringify({ error: `Unknown tool: ${toolName}` });
           }
-        } else {
-          result = JSON.stringify({ error: `Unknown tool: ${toolName}` });
+          
+          // Cache the result for potential reuse
+          toolResultCache.set(fp, result);
+          if (isFailedOrEmptyResult(toolName, result)) {
+            let reason = 'empty/failed';
+            try {
+              const parsed = JSON.parse(result);
+              if (parsed?.error) reason = String(parsed.error);
+              if (Array.isArray(parsed) && parsed.length === 0) reason = 'empty results';
+            } catch {}
+            failedToolCalls.push({ tool: toolName, args: canonArgs(argsObj), reason, fingerprint: fp });
+          } else {
+            let quality: string | undefined;
+            try {
+              const parsed = JSON.parse(result);
+              if (Array.isArray(parsed)) quality = `${parsed.length} hits`;
+            } catch {}
+            successfulToolCalls.push({ tool: toolName, args: canonArgs(argsObj), fingerprint: fp, quality });
+          }
+        } catch (e: any) {
+          const errText = (e?.name === 'ZodError' || String(e?.message || '').includes('Invalid input'))
+            ? `SCHEMA_VALIDATION_ERROR: ${e?.message ?? 'invalid arguments'}`
+            : `TOOL_EXECUTION_ERROR: ${e?.message ?? 'failed'}`;
+          result = errText;
+          failedToolCalls.push({ tool: toolName, args: canonArgs(argsObj), reason: errText, fingerprint: fp });
         }
-      } catch (e: any) {
-        const errText = (e?.name === 'ZodError' || String(e?.message || '').includes('Invalid input'))
-          ? `SCHEMA_VALIDATION_ERROR: ${e?.message ?? 'invalid arguments'}`
-          : `TOOL_EXECUTION_ERROR: ${e?.message ?? 'failed'}`;
-        result = errText;
       }
 
       const toolMsg = new ToolMessage({ tool_call_id: callId, content: result });
@@ -565,6 +611,19 @@ ${schemaText}`
     await history.addMessage(ai);
     for (const tm of pendingToolMsgs) {
       await history.addMessage(tm);
+    }
+
+    if ((failedToolCalls.length > 0 || successfulToolCalls.length > 0) && steps < MAX_STEPS) {
+      const outcomes = {
+        success: successfulToolCalls.slice(-3).map(s => ({ tool: s.tool, args: s.args, fp: s.fingerprint, quality: s.quality })),
+        do_not_retry: failedToolCalls.slice(-5).map(f => ({ tool: f.tool, args: f.args, fp: f.fingerprint, reason: f.reason }))
+      };
+      const nudge = new HumanMessage(
+        `tool_outcomes:\n${JSON.stringify(outcomes)}\n` +
+        `Rules: Do not repeat any exact call in do_not_retry. If needed, materially change arguments (e.g., query terms, filters).`
+      );
+      messages.push(nudge);
+      await history.addUserMessage(nudge.content as string);
     }
 
     if (steps === MAX_STEPS) {
