@@ -13,6 +13,7 @@ import { plausibilityCheckTool } from '../tools/plausibilityCheck.js';
 import { knowledgeQueryTool } from '../tools/knowledgeQuery.js';
 import { latestFinderTool } from '../tools/latestFinder.js';
 import { inferContext } from './inferenceRouter.js';
+import { summarizeForQuery } from '../tools/shared/summarize.js';
 
 type ResearchIntensity = 'low' | 'medium' | 'high';
 
@@ -52,7 +53,28 @@ const STOP_JUDGE_MODEL = process.env.RESEARCH_STOP_JUDGE_MODEL || process.env.OP
 type StopDecision = { decision: 'finalize' | 'continue'; reason?: string; confidence?: number };
 
 async function shouldStopNowJudge(snapshot: any): Promise<StopDecision> {
+  console.log(snapshot);
   try {
+    try {
+      const srcPreview = (snapshot?.sources || []).slice(0, 5).map((s: any) => {
+        let host = '';
+        try { host = new URL(s.url).hostname; } catch {}
+        return { host, authority: s.authority };
+      });
+      console.log('[stop_judge] snapshot', {
+        steps: snapshot?.steps,
+        maxSteps: snapshot?.maxSteps,
+        webSearchCount: snapshot?.webSearchCount,
+        maxWebSearches: snapshot?.maxWebSearches,
+        staleRounds: snapshot?.staleRounds,
+        minCorroboration: snapshot?.minCorroboration,
+        requireAuthority: snapshot?.requireAuthority,
+        uniqueUrlCount: snapshot?.uniqueUrlCount,
+        highAuthorityCount: snapshot?.highAuthorityCount,
+        sourcesTop5: srcPreview
+      });
+    } catch {}
+
     const judgeModel = new ChatOpenAI({
       model: STOP_JUDGE_MODEL,
       temperature: 0,
@@ -64,11 +86,30 @@ async function shouldStopNowJudge(snapshot: any): Promise<StopDecision> {
     const sys = new SystemMessage(
       'You are a strict research supervisor. Decide whether the agent should STOP now and finalize or CONTINUE gathering evidence.'
     );
+    let contextSummary = '';
+    let shortTermSummary = '';
+    try {
+      const sum = await summarizeForQuery(
+        String(snapshot?.contextText || JSON.stringify(snapshot).slice(0, 12000)),
+        String(snapshot?.query || '')
+      );
+      contextSummary = sum?.summary || '';
+    } catch {}
+    try {
+      if (snapshot?.shortTermTranscript) {
+        const sum2 = await summarizeForQuery(
+          String(snapshot.shortTermTranscript).slice(0, 12000),
+          String(snapshot?.query || '')
+        );
+        shortTermSummary = sum2?.summary || '';
+      }
+    } catch {}
     const human = new HumanMessage(
       `Decision criteria:\n` +
-      `- Must meet citations policy: >= minCorroboration sources; if requireAuthority=true, at least one authority >=70.\n` +
       `- Prefer stopping when sufficient, or when recent rounds show no progress (staleRounds >= 2).\n` +
       `- Prefer continuing if expected variables likely missing or sources conflict.\n\n` +
+      (contextSummary ? `Agent context summary (evidence):\n${contextSummary}\n\n` : '') +
+      (shortTermSummary ? `Short-term memory summary:\n${shortTermSummary}\n\n` : '') +
       `Snapshot JSON:\n${JSON.stringify(snapshot)}\n\n` +
       `Return ONLY JSON: {"decision":"finalize|continue","reason":"...","confidence":0..1}`
     );
@@ -79,12 +120,26 @@ async function shouldStopNowJudge(snapshot: any): Promise<StopDecision> {
       : Array.isArray((ai as any).content)
         ? (ai as any).content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? '')).join('')
         : String((ai as any).content);
+    try { console.log('[stop_judge] raw_response', raw); } catch {}
     try {
       const parsed = JSON.parse(raw);
-      if (parsed && (parsed.decision === 'finalize' || parsed.decision === 'continue')) return parsed;
+      if (parsed && (parsed.decision === 'finalize' || parsed.decision === 'continue')) {
+        try { console.log('[stop_judge] parsed_decision', parsed); } catch {}
+        return parsed;
+      }
     } catch {}
   } catch {}
   return { decision: 'continue', reason: 'fallback', confidence: 0 };
+}
+
+function getFinalizerLlm() {
+  return new ChatOpenAI({
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    temperature: 0,
+    apiKey: process.env.OPENAI_API_KEY,
+    maxRetries: 2,
+    timeout: 60_000
+  });
 }
 
 function dedupeByUrl(sources: SourceAttribution[]): SourceAttribution[] {
@@ -438,16 +493,46 @@ ${schemaText}`
 
   // Build snapshot for the stop-judge model
   function buildEvidenceSnapshot(): any {
-    const urlToAuth = new Map<string, { title?: string; url: string; authority: number }>();
+    const urlToInfo = new Map<string, { title?: string; url: string; authority: number; snippet?: string }>();
     for (const r of webResults) {
       const u = r?.url;
       if (!u || u === 'about:blank') continue;
-      if (!urlToAuth.has(u)) {
-        urlToAuth.set(u, { title: r.title, url: u, authority: getAuthorityScore(u) });
+      if (!urlToInfo.has(u)) {
+        urlToInfo.set(u, {
+          title: r.title,
+          url: u,
+          authority: getAuthorityScore(u),
+          snippet: (r as any).summary ?? r.snippet ?? (r as any).excerpt ?? ''
+        });
       }
     }
-    const sources = Array.from(urlToAuth.values()).sort((a, b) => b.authority - a.authority);
+    const sources = Array.from(urlToInfo.values()).sort((a, b) => b.authority - a.authority);
     const highAuthorityCount = sources.filter(s => s.authority >= 70).length;
+    const headerLines = [
+      `Query: ${query}`,
+      expectedVars.length > 0 ? `Expected variables: ${expectedVars.map(v => v.name).join(', ')}` : undefined,
+      `Progress: step ${steps} of ${MAX_STEPS}; web searches ${webSearchCount}/${maxWebSearches}; stale rounds ${staleRounds}`,
+      `Evidence policy: minCorroboration=${routerOut.evidencePolicy?.minCorroboration ?? 1}; requireAuthority=${routerOut.evidencePolicy?.requireAuthority ? 'yes' : 'no'}`,
+      `Sources: ${sources.length} unique; ${highAuthorityCount} high-authority`
+    ].filter(Boolean).join('\n');
+    const sourcesLines = sources.slice(0, 8).map((s) => {
+      const host = (() => { try { return new URL(s.url).hostname; } catch { return s.url; } })();
+      const snippet = (s.snippet || '').toString().slice(0, 300).replace(/\s+/g, ' ').trim();
+      return `- [${s.authority}] ${s.title || host} | ${host}${snippet ? `\n  ${snippet}` : ''}`;
+    }).join('\n');
+    const contextText = [headerLines, sourcesLines].filter(Boolean).join('\n');
+    const MAX_STM_MESSAGES = 12;
+    const recentMsgs = messages.slice(-MAX_STM_MESSAGES);
+    const shortTermTranscript = recentMsgs.map((m: any) => {
+      const type = m?._getType ? m._getType() : '';
+      const role = type === 'ai' ? 'Assistant' : type === 'tool' ? 'Tool' : type === 'system' ? 'System' : 'User';
+      const content = typeof m?.content === 'string'
+        ? m.content
+        : Array.isArray(m?.content)
+          ? m.content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? '')).join('')
+          : String(m?.content ?? '');
+      return `${role}: ${content}`;
+    }).join('\n');
     return {
       query,
       expectedVars: expectedVars.map(v => v.name),
@@ -460,7 +545,9 @@ ${schemaText}`
       requireAuthority: !!routerOut.evidencePolicy?.requireAuthority,
       uniqueUrlCount: sources.length,
       highAuthorityCount,
-      sources: sources.slice(0, 8)
+      sources: sources.slice(0, 8),
+      contextText,
+      shortTermTranscript
     };
   }
 
@@ -735,7 +822,7 @@ ${schemaText}`
         messages.push(nudge);
         await history.addUserMessage(nudge.content as string);
 
-        const aiFinal = await baseModel.invoke(messages);
+        const aiFinal = await getFinalizerLlm().invoke(messages);
         messages.push(aiFinal);
         await history.addMessage(aiFinal);
         finalRaw = typeof aiFinal.content === 'string' ? aiFinal.content : '';
@@ -743,24 +830,37 @@ ${schemaText}`
       }
     }
 
-    // Supervisor stop-judge (advisory): finalize only if judge says finalize AND heuristics indicate sufficiency/no-progress
+    // Supervisor stop-judge (decisive): finalize if judge says finalize
     if (ENABLE_STOP_JUDGE && steps >= STOP_JUDGE_MIN_STEPS && steps < MAX_STEPS) {
       const snapshot = buildEvidenceSnapshot();
       const judge = await shouldStopNowJudge(snapshot);
       const minCorroboration = routerOut.evidencePolicy?.minCorroboration ?? 1;
       const hasEnoughEvidence = countHighAuthoritySources(webResults) >= minCorroboration && webResults.length > 0;
       const noProgress = staleRounds >= STALE_ROUNDS && webSearchCount > 0;
-      if (judge.decision === 'finalize' && (hasEnoughEvidence || noProgress)) {
+      try {
+        console.log('[stop_judge] gate', {
+          decision: judge?.decision,
+          reason: judge?.reason,
+          confidence: judge?.confidence,
+          hasEnoughEvidence,
+          noProgress,
+          steps,
+          webSearchCount,
+          staleRounds
+        });
+      } catch {}
+      if (judge.decision === 'finalize') {
         const nudge = new HumanMessage(
           'Supervisor: Sufficient evidence or no progress. Stop using tools and produce ONLY the final JSON strictly matching the schema.'
         );
         messages.push(nudge);
         await history.addUserMessage(nudge.content as string);
 
-        const aiFinal = await baseModel.invoke(messages);
+        const aiFinal = await getFinalizerLlm().invoke(messages);
         messages.push(aiFinal);
         await history.addMessage(aiFinal);
         finalRaw = typeof aiFinal.content === 'string' ? aiFinal.content : '';
+        try { console.log('[stop_judge] finalized_by_judge'); } catch {}
         break;
       }
     }
@@ -785,7 +885,7 @@ ${schemaText}`
       messages.push(nudge);
       await history.addUserMessage(nudge.content as string);
 
-      const aiFinal = await baseModel.invoke(messages);
+      const aiFinal = await getFinalizerLlm().invoke(messages);
       messages.push(aiFinal);
       await history.addMessage(aiFinal);
       finalRaw = typeof aiFinal.content === 'string' ? aiFinal.content : '';

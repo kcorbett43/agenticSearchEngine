@@ -2,6 +2,16 @@
 
 AI-powered research and enrichment web app. Enter natural language queries about companies or people and get structured, sourced "magic variables". Handles different output types (boolean questions, specific answers, contextual info) based on the user's input.
 
+### Environment file (.env)
+Create a `.env` file at the repo root with at least the following variables:
+```
+PORT=4001
+OPENAI_API_KEY=
+SEARCH_PROVIDER=tavily
+TAVILY_API_KEY=
+OPENAI_MODEL=
+```
+
 ### Stack
 - Server: Node + Express + TypeScript
 - Client: Vite + React + TypeScript
@@ -54,7 +64,7 @@ docker compose down
    - Client
      - `cd client && npm install`
 
-2. Environment variables (create a `.env` file in `server/`)
+2. Environment variables (create a `.env` file at the repo root)
 ```
 PORT=4001
 DATABASE_URL=postgres://artisan:artisan@localhost:5432/artisan
@@ -81,11 +91,10 @@ npm run dev
 
 # terminal 2
 cd client
-# optional: set VITE_API_URL if server not at localhost:4001
 npm run dev
 ```
 
-Visit the client URL printed by Vite (typically `http://localhost:5173`).
+The client runs on `http://localhost:5173` and assumes the API is at `http://localhost:4001`.
 
 ### API
 POST `/api/enrich`
@@ -109,5 +118,7 @@ Response
 - Intent handling: boolean/specific/contextual is auto-detected and the returned variables reflect that.
 - All values include source attributions where available.
 - Long-term memory: User conversations are automatically summarized and persisted to Postgres when short-term memory exceeds the window. Pass `username` in API requests to enable this.
+
+Health: `GET /api/health` returns `{ ok: true }` when the server is up.
 
 
