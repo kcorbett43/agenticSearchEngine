@@ -6,7 +6,6 @@ import { pool } from './services/db.js';
 
 dotenv.config({ path: process.env.NODE_ENV === 'production' ? '.env' : '../.env' });
 
-// Test database connection
 pool.query('SELECT NOW()').then(() => {
   console.log('Database connected');
 }).catch((err: unknown) => {

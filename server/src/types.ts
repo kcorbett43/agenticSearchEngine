@@ -23,9 +23,9 @@ export interface MagicVariableValue<T = unknown> {
   name: string;
   type: MagicVariableType;
   value: T;
-  confidence: number; // 0..1
+  confidence: number; 
   sources: SourceAttribution[];
-  observed_at?: string; // ISO timestamp
+  observed_at?: string; 
 }
 
 export interface EnrichmentResult {
