@@ -98,7 +98,6 @@ Return JSON only.`;
       entityType = parsed.entityType;
     }
     
-    // Validate entity type is in allowed list
     if (entityType && !ENTITY_TYPES.includes(entityType)) {
       entityType = undefined;
     }
@@ -143,7 +142,6 @@ Return JSON only.`;
     };
     
   } catch (error) {
-    // Fallback to heuristics if LLM parsing fails
     console.warn('Inference router LLM parsing failed, using heuristics:', error);
     return inferContextHeuristic(input);
   }

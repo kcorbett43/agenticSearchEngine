@@ -19,7 +19,6 @@ export async function trimHistory(sessionId: string): Promise<void> {
   if (messages.length <= MAX_MESSAGES) return;
   let keep = messages.slice(-MAX_MESSAGES);
 
-  // If the first kept message is a ToolMessage, try to include its preceding AI tool_call parent
   const first: any = keep[0];
   const toolCallId: string | undefined = (first && (first as any).tool_call_id) ? String((first as any).tool_call_id) : undefined;
   if (toolCallId) {

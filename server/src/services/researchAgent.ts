@@ -54,6 +54,7 @@ function buildRelevantTokens(userQuery: string, expectedVars: MagicVariableDefin
 }
 
 function isIrrelevantWebQuery(proposedQuery: string, relevant: Set<string>): { irrelevant: boolean; reason?: string } {
+  return { irrelevant: true }
   const q = (proposedQuery || '').trim();
   if (!q) return { irrelevant: true, reason: 'empty query' };
   const stop = new Set(['input','query','search','pipeline','title','url','link']);
@@ -93,7 +94,7 @@ function getAuthorityScore(url: string): number {
       host.startsWith('www.') &&
       !host.endsWith('blogspot.com') &&
       !host.endsWith('wordpress.com')
-    ) return 65; // likely company site or established org
+    ) return 65; 
     return 50;
   } catch {
     return 0;
@@ -143,10 +144,8 @@ async function finalizeResult(
   const now = new Date().toISOString();
 
   for (const v of Array.isArray(parsed?.variables) ? parsed.variables : []) {
-    // Ensure subject is present
     let subject = v.subject;
     if (!subject && defaultSubject) {
-      // Resolve entity for default subject
       const entityId = await resolveEntity(defaultSubject.name, defaultSubject.type);
       subject = {
         name: defaultSubject.name,
@@ -154,7 +153,6 @@ async function finalizeResult(
         canonical_id: entityId
       };
     } else if (subject && !subject.canonical_id) {
-      // Resolve canonical_id if not provided
       const entityId = await resolveEntity(subject.name, subject.type);
       subject = {
         ...subject,
@@ -181,7 +179,6 @@ async function finalizeResult(
   }
 
   if (variables.length === 0 && defaultSubject) {
-    // Fallback context variable
     const entityId = await resolveEntity(defaultSubject.name, defaultSubject.type);
     variables.push({
       subject: {
@@ -252,9 +249,7 @@ Output format (no markdown, newline-separated bullets):`);
         await addMemory(username, fact, ['summary']);
       }
     }
-  } catch {
-    // swallow summarization errors
-  }
+  } catch {}
 }
 
 function needsTwoAgreeingSources(variable: MagicVariableValue): boolean {
@@ -292,10 +287,8 @@ export async function runAgent(query: string, expectedVars: MagicVariableDefinit
   const baseModel = getDefaultLlm()
   const { intent, target } = await classifyIntent(baseModel, query);
 
-  // Run inference router to get priors and constraints
   const routerOut = await inferContext({ query, expectedVars, entity });
 
-  // Determine default subject from entity parameter
   const defaultSubjectName = entity || 'Unknown Entity';
   const defaultSubjectType = routerOut.entityType || 'organization';
 
@@ -343,8 +336,7 @@ IMPORTANT: Every variable MUST include a "subject" object. The subject should be
     ? `\n- Most likely entity type: ${routerOut.entityType}`
     : '';
 
-  // Inject current date into system prompt
-  const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const currentDate = new Date().toISOString().split('T')[0];
   const currentDateReadable = new Date().toLocaleDateString('en-US', { 
     weekday: 'long', 
     year: 'numeric', 
@@ -427,13 +419,11 @@ ${schemaText}`
 
     const toolCalls = (ai as AIMessage).tool_calls ?? [];
     if (toolCalls.length === 0) {
-      // Model decided to produce a final answer; validate citations and requirements
       await history.addMessage(ai);
       const candidate = typeof ai.content === 'string' ? ai.content : '';
       let parsed: any = null;
       try { parsed = JSON.parse(candidate); } catch {}
       if (parsed && Array.isArray(parsed.variables)) {
-        // Ensure all variables have subjects (add default if missing)
         for (const v of parsed.variables) {
           if (!v.subject && defaultSubjectName !== 'Unknown Entity') {
             v.subject = {
@@ -443,16 +433,13 @@ ${schemaText}`
           }
         }
         
-        // Filter variables based on attribute constraints
         const allowedVars = (parsed.variables as any[]).filter((v: any) => {
           const constraint = routerOut.attrConstraints[v.name];
           return constraint !== 'forbidden' && v.subject; // Must have subject
         });
         
-        // Update parsed variables to only include allowed ones
         parsed.variables = allowedVars;
         
-        // Validate that variables have subjects and citations
         const validationIssues: string[] = [];
         for (const v of allowedVars) {
           if (!v.subject || !v.subject.name) {
@@ -468,7 +455,6 @@ ${schemaText}`
             );
             messages.push(nudge);
             await history.addUserMessage(nudge.content as string);
-            // continue loop to allow tools or final correction
             continue;
           }
         } else if (steps < MAX_STEPS) {
@@ -480,7 +466,6 @@ ${schemaText}`
           continue;
         }
         
-        // Update candidate with filtered variables
         finalRaw = JSON.stringify(parsed);
       } else {
         finalRaw = candidate;
@@ -507,10 +492,13 @@ ${schemaText}`
             const guard = isIrrelevantWebQuery(proposed, relevantTokens);
             if (guard.irrelevant) {
               result = JSON.stringify({ error: 'Blocked irrelevant web_search', query: proposed, reason: guard.reason });
+              console.log(result);
             } else if (webSearchCount >= maxWebSearches) {
               result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
+              console.log(result);
             } else {
               result = String(await webSearchTool.invoke(argsObj));
+              console.log(result);
               try {
                 const maybeErr = JSON.parse(result);
                 if (!maybeErr || !maybeErr.error) webSearchCount += 1;
@@ -519,7 +507,6 @@ ${schemaText}`
               }
             }
           } else {
-            // Let schema enforce required fields
             result = String(await webSearchTool.invoke(argsObj));
           }
           try {
@@ -575,13 +562,11 @@ ${schemaText}`
       }
     }
 
-    // Persist assistant and all tool results together, in order
     await history.addMessage(ai);
     for (const tm of pendingToolMsgs) {
       await history.addMessage(tm);
     }
 
-    // Nudge to produce final JSON if we're at the last step
     if (steps === MAX_STEPS) {
       const nudge = new HumanMessage(
         'Now stop using tools and produce ONLY the final JSON strictly matching the schema.'
@@ -601,50 +586,46 @@ ${schemaText}`
   await trimHistory(sid);
 
 
-
-  // Try to validate/normalize through zod; if not valid JSON, finalizeResult handles fallback
   let normalized: string = finalRaw;
   try {
     const parsed = JSON.parse(finalRaw);
     const safe = EnrichmentSchema.safeParse(parsed);
     normalized = JSON.stringify(safe.success ? safe.data : parsed);
-  } catch {
-    // not JSON, will be handled by finalize
-  }
+  } catch {}
 
   const defaultSubject = entity ? { name: entity, type: defaultSubjectType } : undefined;
   let result = await finalizeResult(normalized, intent, webResults, defaultSubject);
   console.log(result);
 
-  // Apply trusted facts overrides when available
   if (entity && trustedFacts.length > 0) {
     for (const v of result.variables) {
       const tf = trustedFacts.find(f => f.name === v.name);
       if (tf && tf.value !== undefined) {
-        v.value = tf.value as any;
-        v.confidence = 1.0;
-        const tfSource: SourceAttribution = tf.sources && tf.sources.length > 0 
-          ? { title: tf.sources[0].title, url: tf.sources[0].url, snippet: tf.sources[0].snippet }
-          : { title: 'Trusted user fact', url: 'about:trusted-fact', snippet: undefined };
-        v.sources = dedupeByUrl([tfSource, ...v.sources]);
+        const trustedConfidence = tf.confidence ?? 0;
+        const researchConfidence = v.confidence ?? 0;
+        
+        if (trustedConfidence >= researchConfidence) {
+          v.value = tf.value as any;
+          v.confidence = trustedConfidence;
+          const tfSource: SourceAttribution = tf.sources && tf.sources.length > 0 
+            ? { title: tf.sources[0].title, url: tf.sources[0].url, snippet: tf.sources[0].snippet }
+            : { title: 'Trusted user fact', url: 'about:trusted-fact', snippet: undefined };
+          v.sources = dedupeByUrl([tfSource, ...v.sources]);
+        }
       }
     }
   }
 
-  // Store facts for all variables
   try {
     for (const variable of result.variables) {
-      // Skip context variables or variables without proper subjects
       if (variable.name === 'context' || !variable.subject || !variable.subject.canonical_id) {
         continue;
       }
-      
       const observedAt = variable.observed_at ? new Date(variable.observed_at) : undefined;
       await storeFact(variable, observedAt);
     }
   } catch (error) {
     console.error('Failed to store facts:', error);
-    // Don't fail the entire request if fact storage fails
   }
   console.log(result);
 

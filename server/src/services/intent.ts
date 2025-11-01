@@ -5,7 +5,7 @@ export type Intent = 'boolean' | 'specific' | 'contextual';
 
 export interface ClassifiedIntent {
   intent: Intent;
-  target?: string; // for specific intent, e.g., "founder", "valuation" etc.
+  target?: string;
 }
 
 export async function classifyIntent(llm: LlmProvider, query: string): Promise<ClassifiedIntent> {
@@ -29,10 +29,7 @@ Query: ${query}`;
     if (intent === 'boolean' || intent === 'specific' || intent === 'contextual') {
       return { intent, target: typeof parsed.target === 'string' ? parsed.target : undefined };
     }
-  } catch {
-    // fallthrough
-  }
-  // heuristic fallback
+  } catch {}
   const q = query.toLowerCase();
   if (q.startsWith('is ') || q.startsWith('are ') || q.endsWith('?')) return { intent: 'boolean' };
   if (q.startsWith('who ') || q.startsWith('what ') || q.startsWith('when ') || q.startsWith('where ')) return { intent: 'specific' };

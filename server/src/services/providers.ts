@@ -1,5 +1,5 @@
 import { ChatOpenAI } from '@langchain/openai';
-import type { Tool } from '@langchain/core/tools';
+import type { StructuredTool } from '@langchain/core/tools';
 import type { Runnable } from '@langchain/core/runnables';
 import type { BaseMessage } from '@langchain/core/messages';
 import { webSearchTool } from '../tools/webSearch.js';
@@ -14,7 +14,7 @@ export function getDefaultLlm(): LlmProvider {
   return createOpenAiToolModel(tools);
 }
 
-export function createOpenAiToolModel(tools: Tool[]): LlmProvider {
+export function createOpenAiToolModel(tools: StructuredTool[]): LlmProvider {
   const apiKey = process.env.OPENAI_API_KEY;
   const modelName = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const model = new ChatOpenAI({
