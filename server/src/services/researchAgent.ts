@@ -32,7 +32,6 @@ function getIntensityCaps(intensity: ResearchIntensity): { maxIterations: number
   return { maxIterations: cappedSteps, maxWebSearches: cappedWeb };
 }
 
-// Early-stop controls
 const ENABLE_EARLY_STOP = process.env.RESEARCH_EARLY_STOP !== 'false';
 const STALE_ROUNDS = Number(process.env.RESEARCH_STALE_ROUNDS ?? 2);
 
@@ -45,7 +44,6 @@ function countHighAuthoritySources(results: Array<{ url?: string }>): number {
   return urls.size;
 }
 
-// Stop-judge controls
 const ENABLE_STOP_JUDGE = true;
 const STOP_JUDGE_MIN_STEPS = Number(process.env.RESEARCH_STOP_JUDGE_MIN_STEPS ?? 1);
 const STOP_JUDGE_MODEL = process.env.RESEARCH_STOP_JUDGE_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
@@ -53,27 +51,7 @@ const STOP_JUDGE_MODEL = process.env.RESEARCH_STOP_JUDGE_MODEL || process.env.OP
 type StopDecision = { decision: 'finalize' | 'continue'; reason?: string; confidence?: number };
 
 async function shouldStopNowJudge(snapshot: any): Promise<StopDecision> {
-  console.log(snapshot);
   try {
-    try {
-      const srcPreview = (snapshot?.sources || []).slice(0, 5).map((s: any) => {
-        let host = '';
-        try { host = new URL(s.url).hostname; } catch {}
-        return { host, authority: s.authority };
-      });
-      console.log('[stop_judge] snapshot', {
-        steps: snapshot?.steps,
-        maxSteps: snapshot?.maxSteps,
-        webSearchCount: snapshot?.webSearchCount,
-        maxWebSearches: snapshot?.maxWebSearches,
-        staleRounds: snapshot?.staleRounds,
-        minCorroboration: snapshot?.minCorroboration,
-        requireAuthority: snapshot?.requireAuthority,
-        uniqueUrlCount: snapshot?.uniqueUrlCount,
-        highAuthorityCount: snapshot?.highAuthorityCount,
-        sourcesTop5: srcPreview
-      });
-    } catch {}
 
     const judgeModel = new ChatOpenAI({
       model: STOP_JUDGE_MODEL,
@@ -120,11 +98,10 @@ async function shouldStopNowJudge(snapshot: any): Promise<StopDecision> {
       : Array.isArray((ai as any).content)
         ? (ai as any).content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? '')).join('')
         : String((ai as any).content);
-    try { console.log('[stop_judge] raw_response', raw); } catch {}
+    
     try {
       const parsed = JSON.parse(raw);
       if (parsed && (parsed.decision === 'finalize' || parsed.decision === 'continue')) {
-        try { console.log('[stop_judge] parsed_decision', parsed); } catch {}
         return parsed;
       }
     } catch {}
@@ -491,7 +468,6 @@ ${schemaText}`
   const toolUseRegistry = new Set<string>();
   const toolResultCache = new Map<string, string>();
 
-  // Build snapshot for the stop-judge model
   function buildEvidenceSnapshot(): any {
     const urlToInfo = new Map<string, { title?: string; url: string; authority: number; snippet?: string }>();
     for (const r of webResults) {
@@ -674,7 +650,7 @@ ${schemaText}`
         const cachedResult = toolResultCache.get(fp);
         if (cachedResult) {
           result = cachedResult;
-          console.log(`Reusing cached result for duplicate tool call: ${toolName}`);
+          
           if (isFailedOrEmptyResult(toolName, result)) {
             failedToolCalls.push({ tool: toolName, args: canonArgs(argsObj), reason: 'duplicate (cached failed/empty)', fingerprint: fp });
           }
@@ -684,21 +660,20 @@ ${schemaText}`
             tool: toolName, 
             message: 'This exact tool call was already executed in this session' 
           });
-          console.log(`Blocked duplicate tool call: ${toolName}`);
+          
           failedToolCalls.push({ tool: toolName, args: canonArgs(argsObj), reason: 'duplicate blocked', fingerprint: fp });
         }
       } else {
         try {
           if (toolName === 'web_search') {
-            console.log('web_search');
-            try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+            
             const proposed = typeof argsObj?.query === 'string' ? String(argsObj.query) : '';
             if (proposed && webSearchCount >= maxWebSearches) {
               result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
-              console.log(result);
+              
             } else {
               result = String(await webSearchTool.invoke(argsObj));
-              console.log(result);
+              
               try {
                 const maybeErr = JSON.parse(result);
                 if (!maybeErr || !maybeErr.error) webSearchCount += 1;
@@ -722,18 +697,15 @@ ${schemaText}`
               prevUniqueUrlCount = uniqueUrlCount;
             }
           } else if (toolName === 'evaluate_plausibility') {
-            console.log('evaluate_plausibility');
-            try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+            
             result = String(await plausibilityCheckTool.invoke(argsObj));
-            try { console.log(result); } catch {}
+            
           } else if (toolName === 'knowledge_query') {
-            console.log('knowledge_query');
-            try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+            
             result = String(await knowledgeQueryTool.invoke(argsObj));
-            try { console.log(result); } catch {}
+            
           } else if (toolName === 'latest_finder') {
-            console.log('latest_finder');
-            try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+            
             if (webSearchCount >= maxWebSearches) {
               result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
             } else {
@@ -808,7 +780,6 @@ ${schemaText}`
       await history.addMessage(tm);
     }
 
-    // Early-stop: sufficient evidence or no progress
     if (ENABLE_EARLY_STOP && steps < MAX_STEPS) {
       const minCorroboration = routerOut.evidencePolicy?.minCorroboration ?? 1;
       const highAuthCount = countHighAuthoritySources(webResults);
@@ -830,25 +801,13 @@ ${schemaText}`
       }
     }
 
-    // Supervisor stop-judge (decisive): finalize if judge says finalize
     if (ENABLE_STOP_JUDGE && steps >= STOP_JUDGE_MIN_STEPS && steps < MAX_STEPS) {
       const snapshot = buildEvidenceSnapshot();
       const judge = await shouldStopNowJudge(snapshot);
       const minCorroboration = routerOut.evidencePolicy?.minCorroboration ?? 1;
       const hasEnoughEvidence = countHighAuthoritySources(webResults) >= minCorroboration && webResults.length > 0;
       const noProgress = staleRounds >= STALE_ROUNDS && webSearchCount > 0;
-      try {
-        console.log('[stop_judge] gate', {
-          decision: judge?.decision,
-          reason: judge?.reason,
-          confidence: judge?.confidence,
-          hasEnoughEvidence,
-          noProgress,
-          steps,
-          webSearchCount,
-          staleRounds
-        });
-      } catch {}
+      
       if (judge.decision === 'finalize') {
         const nudge = new HumanMessage(
           'Supervisor: Sufficient evidence or no progress. Stop using tools and produce ONLY the final JSON strictly matching the schema.'
@@ -860,7 +819,7 @@ ${schemaText}`
         messages.push(aiFinal);
         await history.addMessage(aiFinal);
         finalRaw = typeof aiFinal.content === 'string' ? aiFinal.content : '';
-        try { console.log('[stop_judge] finalized_by_judge'); } catch {}
+        
         break;
       }
     }
@@ -906,7 +865,7 @@ ${schemaText}`
 
   const defaultSubject = entity ? { name: entity, type: defaultSubjectType } : undefined;
   let result = await finalizeResult(normalized, intent, webResults, defaultSubject);
-  console.log(result);
+  
 
   if (entity && trustedFacts.length > 0) {
     for (const v of result.variables) {
@@ -938,7 +897,7 @@ ${schemaText}`
   } catch (error) {
     console.error('Failed to store facts:', error);
   }
-  console.log(result);
+  
 
   return result;
 }

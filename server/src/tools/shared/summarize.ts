@@ -13,7 +13,6 @@ export async function summarizeForQuery(text: string, query: string): Promise<Su
     return { summary: '', key_facts: [], quotes: [], published_at: null };
   }
 
-  // Fallback when no API key: return truncated excerpt as "summary"
   if (!process.env.OPENAI_API_KEY) {
     const excerpt = text.slice(0, 800);
     return {
@@ -47,6 +46,7 @@ export async function summarizeForQuery(text: string, query: string): Promise<Su
     const match = content.match(/\{[\s\S]*\}/);
     if (match) {
       const parsed = JSON.parse(match[0]);
+      
       return {
         summary: String(parsed.summary || ''),
         key_facts: Array.isArray(parsed.key_facts) ? parsed.key_facts.map((s: any) => String(s || '')).filter(Boolean) : [],
@@ -56,7 +56,6 @@ export async function summarizeForQuery(text: string, query: string): Promise<Su
     }
   } catch {}
 
-  // Fallback if parsing fails
   const excerpt = text.slice(0, 800);
   return { summary: excerpt, key_facts: [], quotes: [], published_at: null };
 }

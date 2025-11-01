@@ -1,9 +1,12 @@
 ## Artisan Research (TypeScript)
 
-AI-powered research and enrichment web app. Enter natural language queries about companies or people and get structured, sourced "magic variables". Handles different output types (boolean questions, specific answers, contextual info) based on the user's input.
+An AI-powered research and enrichment web app, using Typescript, that can take natural language queries about companies or people and return structured, sourced "magic variables". Handle different output types (boolean questions, specific answers, contextual information) based on the users input.
+
+Outputs concise answers to queries. Click on "View Full JSON Response" to see the
+full variable output.
 
 ### Environment file (.env)
-Create a `.env` file at the repo root with at least the following variables:
+Create a `.env` file at the repo root with the following variables:
 ```
 PORT=4001
 OPENAI_API_KEY=
@@ -12,15 +15,9 @@ TAVILY_API_KEY=
 OPENAI_MODEL=
 ```
 
-### Stack
-- Server: Node + Express + TypeScript
-- Client: Vite + React + TypeScript
-- Database: Postgres (pgvector)
-- Providers: OpenAI (LLM), Tavily/SerpAPI (web search)
-
-### Setup (Docker - recommended)
+### Setup (Docker)
 1. Environment variables
-   - Create a `.env` file at repo root (same folder as `docker-compose.yml`) and set any keys you have:
+   - Create a `.env` file at repo root (same folder as `docker-compose.yml`) and set these keys:
 ```
 OPENAI_API_KEY=your_openai_key
 OPENAI_MODEL=gpt-4o-mini
@@ -33,21 +30,13 @@ TAVILY_API_KEY=your_tavily_key
 docker compose up --build
 ```
 
-This will:
-- Build the server and client images
-- Start the database, wait for it to be healthy
-- Start the server (auto-installs dependencies via entrypoint if needed)
-- Start the client
-- Run in the foreground (use `-d` flag to run in detached mode)
-
 3. Run database migrations (first time setup)
 ```
 docker compose exec server npm run migrate
 ```
 
 4. Access
-   - Client (Vite dev server): http://localhost:5173
-   - Server (Express API): http://localhost:4001
+   - Client: http://localhost:5173
    - Postgres (pgvector): localhost:5432 (user: artisan, password: artisan, db: artisan)
 
 5. Stop
@@ -55,70 +44,18 @@ docker compose exec server npm run migrate
 docker compose down
 ```
 
-**Live development**: Source folders `client/` and `server/` are mounted into their containers; changes hot-reload automatically.
 
-### Setup (Local - optional)
-1. Install deps
-   - Server
-     - `cd server && npm install`
-   - Client
-     - `cd client && npm install`
+### Research Agent Overview
+- **Intent & routing**: The agent first classifies intent (boolean/specific/contextual) and infers context (entity type, attribute constraints, evidence policy, vocabulary hints) to guide research.
+- **Research intensity**: Caps steps and web searches by intensity (`low`/`medium`/`high`).
+- **Tools**: Uses `web_search`, `latest_finder` (recency-focused), `knowledge_query` (DB lookups), and `evaluate_plausibility`. Duplicate tool calls with identical arguments are blocked and cached.
+- **Evidence handling**: Aggregates results, dedupes by URL, and ranks sources by an internal authority score (e.g., SEC/Wikidata/Wikipedia/major news > blogs). A citations gate enforces corroboration (e.g., dates/numbers/strings prefer ≥2 agreeing sources; optional high-authority requirement).
+- **Stopping**: Two layers:
+  - Stop when no more tools are being used.
+  - A supervisor "stop judge" LLM can instruct finalization once evidence appears sufficient.
+- **Finalization**: A separate finalizer LLM produces strict JSON. The agent validates required fields, injects a default subject when applicable, and re-prompts if citations are insufficient.
+- **Entities & memory**: Resolves subjects to canonical IDs, merges user trusted facts (prefers higher confidence), stores stable facts to the facts store, and periodically summarizes chat into durable long‑term memory when the short‑term window is exceeded.
 
-2. Environment variables (create a `.env` file at the repo root)
-```
-PORT=4001
-DATABASE_URL=postgres://artisan:artisan@localhost:5432/artisan
-OPENAI_API_KEY=your_openai_key
-OPENAI_MODEL=gpt-4o-mini
-SEARCH_PROVIDER=tavily
-TAVILY_API_KEY=your_tavily_key
-# or use SerpAPI instead:
-# SEARCH_PROVIDER=serpapi
-# SERPAPI_API_KEY=your_serpapi_key
-```
-
-3. Run database migrations
-```
-cd server
-npm run migrate
-```
-
-4. Run
-```
-# terminal 1
-cd server
-npm run dev
-
-# terminal 2
-cd client
-npm run dev
-```
-
-The client runs on `http://localhost:5173` and assumes the API is at `http://localhost:4001`.
-
-### API
-POST `/api/enrich`
-```
-{ "query": string, "variables"?: [{ "name": string, "type"?: "boolean"|"string"|"number"|"date"|"url"|"text", "description"?: string }] }
-```
-
-Response
-```
-{
-  "intent": "boolean" | "specific" | "contextual",
-  "variables": [
-    { "name": string, "type": string, "value": any, "confidence": number, "sources": [{ "title"?: string, "url": string, "snippet"?: string }] }
-  ],
-  "notes"?: string
-}
-```
-
-### Notes
-- Without API keys, the app uses a minimal mock LLM and returns limited results.
-- Intent handling: boolean/specific/contextual is auto-detected and the returned variables reflect that.
-- All values include source attributions where available.
-- Long-term memory: User conversations are automatically summarized and persisted to Postgres when short-term memory exceeds the window. Pass `username` in API requests to enable this.
-
-Health: `GET /api/health` returns `{ ok: true }` when the server is up.
+The implementation lives in `server/src/services/researchAgent.ts`
 
 

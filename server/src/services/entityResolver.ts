@@ -72,7 +72,6 @@ export async function getEntity(entityId: string): Promise<EntitySubject | null>
 }
 
 export async function tryResolveExistingEntity(name: string): Promise<{ id: string; name: string; type: string } | null> {
-  // Try canonical_name exact (case-insensitive) or alias exact match
   const sql = `
     SELECT id, canonical_name as name, type
     FROM entities
@@ -88,7 +87,6 @@ export async function tryResolveExistingEntity(name: string): Promise<{ id: stri
     if (res.rows.length > 0) return res.rows[0];
     return null;
   } catch {
-    // Fallback to canonical_name only if JSONB function not available
     try {
       const res = await pool.query(
         `SELECT id, canonical_name as name, type FROM entities WHERE LOWER(canonical_name) = LOWER($1) LIMIT 1`,

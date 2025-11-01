@@ -39,7 +39,6 @@ enrichRouter.post('/', async (req, res) => {
   }
 
   try {
-    // Apply any trusted fact corrections provided by the caller (feedback learning)
     if (Array.isArray(parsed.data.corrections) && parsed.data.corrections.length > 0) {
       const fallbackEntity = parsed.data.entity || 'global';
       const username = parsed.data.username;

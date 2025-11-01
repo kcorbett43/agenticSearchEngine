@@ -47,7 +47,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    // initial message to hint usage
     if (messages.length === 0) {
       setMessages([
         {
@@ -62,7 +61,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    // auto scroll to bottom on new message
     const el = listRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
@@ -178,7 +176,6 @@ function MessageItem({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const ts = new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   
-  // Convert URLs in content to clickable links
   const formatContent = (text: string) => {
     const urlRegex = /(https?:\/\/[^\s]+)/g;
     const parts = text.split(urlRegex);
@@ -211,13 +208,11 @@ function MessageItem({ message }: { message: ChatMessage }) {
 }
 
 function formatVarValue(value: unknown): string {
-  // Handle arrays of link objects (e.g., {title, url}[])
   if (Array.isArray(value)) {
     const arr = value as any[];
-    // Check if it's an array of objects with url property (link-like objects)
     if (arr.length > 0 && arr.every((item: any) => item && typeof item === 'object' && ('url' in item))) {
       return arr
-        .slice(0, 10) // Limit to first 10 items
+        .slice(0, 10)
         .map((item: any) => {
           const title = typeof item.title === 'string' ? item.title.trim() : '';
           const url = String(item.url ?? '').trim();
@@ -233,15 +228,12 @@ function formatVarValue(value: unknown): string {
         .filter(Boolean)
         .join('\n');
     }
-    // Handle arrays of simple values
     if (arr.every((item: any) => typeof item !== 'object')) {
       return arr.join(', ');
     }
-    // Fallback for other arrays
     return JSON.stringify(value);
   }
   
-  // Handle single link objects
   if (value && typeof value === 'object') {
     const obj = value as any;
     if ('url' in obj) {
@@ -255,7 +247,6 @@ function formatVarValue(value: unknown): string {
         return title;
       }
     }
-    // Fallback for other objects
     return JSON.stringify(value);
   }
   

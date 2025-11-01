@@ -43,7 +43,6 @@ class WebSearchTool extends StructuredTool {
             if (!updated.snippet || (updated.snippet?.length ?? 0) < 120) {
               updated.snippet = truncate(sum.summary || excerpt, 300);
             }
-            // Avoid attaching large content by default
             delete (updated as any).content;
             return updated;
           }
