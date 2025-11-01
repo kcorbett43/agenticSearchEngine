@@ -4,7 +4,7 @@ import { MagicVariableDefinition } from '../types.js';
 import { ChatOpenAI } from '@langchain/openai';
 
 export type RouterOut = {
-  entityTypePrior: Record<string, number>; // e.g., {"startup":0.65,"media":0.1,"person":0.05,...}
+  entityTypePrior: Record<string, number>; // e.g., {"organization":0.5,"person":0.2,"concept":0.1,...}
   attrConstraints: Record<string, "required" | "allowed" | "forbidden">; // from expectedVars + commonsense
   vocabHints: { boost: string[]; penalize: string[] };
   evidencePolicy: { minCorroboration: number; requireAuthority: boolean; freshnessDays?: number };
@@ -17,8 +17,7 @@ export interface InferenceRouterInput {
 }
 
 const ENTITY_TYPES = [
-  'startup', 'company', 'person', 'product', 'org', 'media', 'place',
-  'event', 'concept', 'technology', 'investment', 'other'
+  'person', 'organization', 'product', 'place', 'event', 'concept', 'artifact', 'other'
 ];
 
 function normalizeEntityTypePrior(prior: Record<string, number>): Record<string, number> {
@@ -76,9 +75,9 @@ Entity types to consider: ${ENTITY_TYPES.join(', ')}
 
 Return ONLY valid JSON matching this schema:
 {
-  "entityTypePrior": { "startup": 0.65, "person": 0.1, ... },
-  "attrConstraints": { "is_yc_company": "allowed", "founder_name": "required", "film_title": "forbidden" },
-  "vocabHints": { "boost": ["Series A", "YC", "headcount"], "penalize": ["film", "studio"] },
+  "entityTypePrior": { "organization": 0.5, "person": 0.2, ... },
+  "attrConstraints": { "name": "required", "date": "allowed", "coordinates": "forbidden" },
+  "vocabHints": { "boost": ["definition", "biography", "location"], "penalize": ["unrelated", "ambiguous"] },
   "evidencePolicy": { "minCorroboration": 2, "requireAuthority": true, "freshnessDays": 365 }
 }
 
@@ -136,16 +135,11 @@ Return JSON only.`;
       }
     }
     
-    // Infer constraints from expectedVars
+    // Infer constraints from expectedVars (generic, domain-agnostic)
     for (const varDef of expectedVars) {
-      const name = varDef.name.toLowerCase();
-      // If not already set, infer constraint from variable name
+      // If not already set, infer generic constraint
       if (!attrConstraints[varDef.name]) {
-        if (name.includes('yc') || name.includes('series') || name.includes('valuation')) {
-          attrConstraints[varDef.name] = 'allowed';
-        } else {
-          attrConstraints[varDef.name] = 'allowed'; // default
-        }
+        attrConstraints[varDef.name] = 'allowed';
       }
     }
     
@@ -181,64 +175,31 @@ Return JSON only.`;
 }
 
 function inferContextHeuristic(input: InferenceRouterInput): RouterOut {
-  const { query, expectedVars } = input;
-  const q = query.toLowerCase();
-  
-  // Heuristic entity type priors
-  const entityTypePrior: Record<string, number> = {
-    'other': 0.3
-  };
-  
-  if (q.includes('startup') || q.includes('yc') || q.includes('series a') || q.includes('series b') || 
-      q.includes('vc') || q.includes('valuation') || q.includes('funding') || q.includes('raised')) {
-    entityTypePrior['startup'] = 0.7;
-    entityTypePrior['company'] = 0.2;
-  } else if (q.includes('person') || q.includes('founder') || q.includes('ceo') || q.includes('director')) {
-    entityTypePrior['person'] = 0.7;
-  } else if (q.includes('film') || q.includes('movie') || q.includes('studio') || q.includes('podcast')) {
-    entityTypePrior['media'] = 0.8;
-  } else if (q.includes('company') || q.includes('corporation') || q.includes('business')) {
-    entityTypePrior['company'] = 0.6;
-  } else {
-    entityTypePrior['other'] = 0.5;
-    entityTypePrior['company'] = 0.3;
+  const { expectedVars } = input;
+
+  // Neutral fallback: uniform prior across entity types
+  const entityTypePrior: Record<string, number> = {};
+  const uniformProb = 1 / ENTITY_TYPES.length;
+  for (const t of ENTITY_TYPES) {
+    entityTypePrior[t] = uniformProb;
   }
-  
-  // Normalize
-  const sum = Object.values(entityTypePrior).reduce((a, b) => a + b, 0);
-  for (const key of Object.keys(entityTypePrior)) {
-    entityTypePrior[key] /= sum;
-  }
-  
-  // Attribute constraints from expected vars
+
+  // Attribute constraints from expected vars (generic)
   const attrConstraints: Record<string, "required" | "allowed" | "forbidden"> = {};
   for (const varDef of expectedVars) {
-    const name = varDef.name.toLowerCase();
-    if (name.includes('yc')) {
-      attrConstraints[varDef.name] = 'allowed';
-    } else {
-      attrConstraints[varDef.name] = 'allowed';
-    }
+    attrConstraints[varDef.name] = 'allowed';
   }
-  
-  // Vocabulary hints
+
+  // Vocabulary hints (left empty in heuristic; LLM provides when available)
   const vocabHints = { boost: [] as string[], penalize: [] as string[] };
-  if (q.includes('yc') || q.includes('y combinator')) {
-    vocabHints.boost.push('YC', 'Y Combinator', 'startup', 'funding');
-    vocabHints.penalize.push('film', 'movie', 'media');
-  }
-  
-  // Evidence policy
+
+  // Evidence policy (neutral defaults)
   const evidencePolicy = {
     minCorroboration: 1,
-    requireAuthority: q.includes('valuation') || q.includes('revenue') || q.includes('profit'),
+    requireAuthority: false,
     freshnessDays: undefined as number | undefined
   };
-  
-  if (q.includes('latest') || q.includes('recent') || q.includes('current')) {
-    evidencePolicy.freshnessDays = 365;
-  }
-  
+
   return {
     entityTypePrior,
     attrConstraints,
