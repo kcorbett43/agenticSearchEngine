@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
-import { DynamicTool } from '@langchain/core/tools';
+import { StructuredTool } from '@langchain/core/tools';
+import { z } from 'zod';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { ChatOpenAI } from '@langchain/openai';
 
@@ -217,10 +218,14 @@ Example: {"query":"Tesla Model Y launch date"}
 Do NOT call this tool without a "query" field.`;
 }
 
-export const latestFinderTool = new DynamicTool({
-  name: 'latest_finder',
-  description: getLatestFinderDescription(),
-  func: async (input: string) => {
+class LatestFinderTool extends StructuredTool {
+  name = 'latest_finder';
+  description = getLatestFinderDescription();
+  schema = z.object({
+    query: z.string().min(1)
+  }).strict();
+
+  async _call(input: { query: string }): Promise<string> {
     // Internal constants - not configurable by LLM
     const maxLoops = 5;
     const minSources = 2;
@@ -229,16 +234,8 @@ export const latestFinderTool = new DynamicTool({
     const initialDays: number | undefined = 365;
 
     // Parse inputs - only accept query from LLM
-    let query = '';
-
-    try {
-      const parsed = JSON.parse(input);
-      if (typeof parsed?.query === 'string') query = parsed.query;
-    } catch {
-      query = (input || '').trim();
-    }
-
-    if (!query) {
+    const query = input.query;
+    if (!query || !query.trim()) {
       return JSON.stringify({ error: 'Query is required. Pass JSON: {"query":"..."}' });
     }
 
@@ -397,5 +394,7 @@ export const latestFinderTool = new DynamicTool({
       iterations
     });
   }
-});
+}
+
+export const latestFinderTool = new LatestFinderTool();
 

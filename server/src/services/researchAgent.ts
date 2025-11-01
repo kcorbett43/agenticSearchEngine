@@ -124,7 +124,7 @@ const EnrichmentSchema = z.object({
     observed_at: z.string().optional()
   })).default([]),
   notes: z.string().nullable()
-});
+}).strict();
 
 async function finalizeResult(
   raw: string, 
@@ -368,6 +368,11 @@ IMPORTANT: Every variable MUST include a "subject" object. The subject should be
 Current date: ${currentDateReadable} (${currentDate}). Use this to interpret relative time references and understand what information might be outside your training data.
 
 Important: For information outside your training data cutoff or for recent/current events, you MUST gather outside information using the available tools (web_search, latest_finder, knowledge_query). Do not rely solely on your training knowledge for recent or specific factual information.
+IMPORTANT CONTRACT:
+- You MUST obey tool parameter names and types exactly.
+- Do not invent parameters not in the schema.
+- If a tool call is rejected with SCHEMA_VALIDATION_ERROR, repair the call and try again.
+- Use tools sequentially; never run in parallel.
 IMPORTANT: Make sure to call tools with the proper keys. These are described in the tool descriptions
 - Before consulting external sources, first check whether there are stored facts about the specific entity. If you do not have an entity name yet, skip internal knowledge and search externally instead.
 - Search the web only when needed (for missing or more recent information).
@@ -490,58 +495,60 @@ ${schemaText}`
     const pendingToolMsgs: ToolMessage[] = [];
     for (const tc of toolCalls) {
       let result: string = '';
+      const toolName = String(tc.name);
+      const callId = String(tc.id ?? '');
+      let argsObj: any = {};
       try {
-        const argsStr = typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args ?? '');
-        if (tc.name === 'web_search') {
-          console.log("web_search");
-          let proposed = argsStr;
-          try {
-            const parsed = JSON.parse(argsStr);
-            if (typeof parsed?.query === 'string') proposed = parsed.query;
-            else if (typeof parsed?.input === 'string') proposed = parsed.input;
-            else if (typeof parsed === 'string') proposed = parsed;
-          } catch {
-            // keep argsStr
-          }
-          const guard = isIrrelevantWebQuery(proposed, relevantTokens);
-          if (guard.irrelevant) {
-            result = JSON.stringify({ error: 'Blocked irrelevant web_search', query: proposed, reason: guard.reason });
-          } else if (webSearchCount >= maxWebSearches) {
-            result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
-          } else {
-            result = String(await webSearchTool.invoke(argsStr));
-            try {
-              const maybeErr = JSON.parse(result);
-              if (!maybeErr || !maybeErr.error) webSearchCount += 1;
-            } catch {
-              webSearchCount += 1;
+        argsObj = typeof tc.args === 'string' ? JSON.parse(tc.args) : (tc.args ?? {});
+      } catch { argsObj = {}; }
+
+      try {
+        if (toolName === 'web_search') {
+          console.log('web_search');
+          try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+          const proposed = typeof argsObj?.query === 'string' ? String(argsObj.query) : '';
+          if (proposed) {
+            const guard = isIrrelevantWebQuery(proposed, relevantTokens);
+            if (guard.irrelevant) {
+              result = JSON.stringify({ error: 'Blocked irrelevant web_search', query: proposed, reason: guard.reason });
+            } else if (webSearchCount >= maxWebSearches) {
+              result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
+            } else {
+              result = String(await webSearchTool.invoke(argsObj));
+              try {
+                const maybeErr = JSON.parse(result);
+                if (!maybeErr || !maybeErr.error) webSearchCount += 1;
+              } catch {
+                webSearchCount += 1;
+              }
             }
+          } else {
+            // Let schema enforce required fields
+            result = String(await webSearchTool.invoke(argsObj));
           }
           try {
             const parsed = JSON.parse(result);
-            if (Array.isArray(parsed)){
-                webResults = [...webResults, ...parsed];
+            if (Array.isArray(parsed)) {
+              webResults = [...webResults, ...parsed];
             }
-          } catch {
-            // ignore parse issues
-          }
-        } else if (tc.name === 'evaluate_plausibility') {
-          console.log("evaluate_plausability");
-          console.log(argsStr);
-          result = String(await plausibilityCheckTool.invoke(argsStr));
-          console.log(result)
-        } else if (tc.name === 'knowledge_query') {
-          console.log("knowledge_query");
-          console.log(argsStr);
-          result = String(await knowledgeQueryTool.invoke(argsStr));
-          console.log(result);
-        } else if (tc.name === 'latest_finder') {
-          console.log("latest_finder");
-          console.log(argsStr);
+          } catch {}
+        } else if (toolName === 'evaluate_plausibility') {
+          console.log('evaluate_plausibility');
+          try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+          result = String(await plausibilityCheckTool.invoke(argsObj));
+          try { console.log(result); } catch {}
+        } else if (toolName === 'knowledge_query') {
+          console.log('knowledge_query');
+          try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
+          result = String(await knowledgeQueryTool.invoke(argsObj));
+          try { console.log(result); } catch {}
+        } else if (toolName === 'latest_finder') {
+          console.log('latest_finder');
+          try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
           if (webSearchCount >= maxWebSearches) {
             result = JSON.stringify({ error: 'Web search limit reached', limit: maxWebSearches });
           } else {
-            result = String(await latestFinderTool.invoke(argsStr));
+            result = String(await latestFinderTool.invoke(argsObj));
             try {
               const maybeErr = JSON.parse(result);
               if (!maybeErr || !maybeErr.error) webSearchCount += 1;
@@ -549,35 +556,26 @@ ${schemaText}`
               webSearchCount += 1;
             }
           }
-          console.log(result);
         } else {
-          result = JSON.stringify({ error: `Unknown tool: ${tc.name}` });
+          result = JSON.stringify({ error: `Unknown tool: ${toolName}` });
         }
       } catch (e: any) {
-        result = JSON.stringify({ error: e?.message ?? 'Tool execution failed' });
+        const errText = (e?.name === 'ZodError' || String(e?.message || '').includes('Invalid input'))
+          ? `SCHEMA_VALIDATION_ERROR: ${e?.message ?? 'invalid arguments'}`
+          : `TOOL_EXECUTION_ERROR: ${e?.message ?? 'failed'}`;
+        result = errText;
       }
 
-
-      const toolMsg = new ToolMessage({
-        tool_call_id: String(tc.id ?? ''),
-        content: result
-      });
+      const toolMsg = new ToolMessage({ tool_call_id: callId, content: result });
       messages.push(toolMsg);
       pendingToolMsgs.push(toolMsg);
 
-      // Nudge the model to pass proper arguments if plausibility tool was misused
-      if (tc.name === 'evaluate_plausibility') {
-        try {
-          const parsedErr = JSON.parse(result);
-          if (parsedErr?.error === 'No claims provided') {
-            const nudge = new HumanMessage(
-              'The evaluate_plausibility tool requires JSON like {"claims":["claim A","claim B"],"context":"..."}. ' +
-              'Extract specific conflicting claims from your current sources and call evaluate_plausibility again with those claims.'
-            );
-            messages.push(nudge);
-            await history.addUserMessage(nudge.content as string);
-          }
-        } catch {}
+      if (toolName === 'evaluate_plausibility' && typeof result === 'string' && result.startsWith('SCHEMA_VALIDATION_ERROR')) {
+        const nudge = new HumanMessage(
+          'The evaluate_plausibility tool requires JSON like {"claims":["claim A","claim B"],"context":"..."}. Extract specific conflicting claims and call the tool again with valid parameters.'
+        );
+        messages.push(nudge);
+        await history.addUserMessage(nudge.content as string);
       }
     }
 

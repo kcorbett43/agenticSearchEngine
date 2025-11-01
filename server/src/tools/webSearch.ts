@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
-import { DynamicTool } from '@langchain/core/tools';
+import { StructuredTool } from '@langchain/core/tools';
+import { z } from 'zod';
 
 type Result = { title?: string; url: string; snippet?: string; content?: string };
 
@@ -74,28 +75,21 @@ async function tavilySearch(query: string, num: number, opts?: { days?: number; 
   }
 }
 
-export const webSearchTool = new DynamicTool({
-  name: 'web_search',
-  description: 'Search the web and return JSON results: [{title, url, snippet, content?}]',
-  func: async (input: string) => {
-    let query = input;
-    let num = 3;
-    let includeContent = true;
-    let days: number | undefined;
-    let depth: 'basic' | 'advanced' = 'advanced';
+class WebSearchTool extends StructuredTool {
+  name = 'web_search';
+  description = 'Search the web. Input MUST be valid JSON: {"query": string, "num"?: 1-10, "includeContent"?: boolean, "days"?: number, "depth"?: "basic"|"advanced"}. Returns JSON: [{title, url, snippet, content?}]';
+  schema = z.object({
+    query: z.string().min(2, 'query must be at least 2 characters'),
+    num: z.number().int().min(1).max(10).optional().default(3),
+    includeContent: z.boolean().optional().default(true),
+    days: z.number().int().min(1).max(365).optional(),
+    depth: z.enum(['basic', 'advanced']).optional().default('advanced')
+  }).strict();
 
-    try {
-      const parsed = JSON.parse(input);
-      if (typeof parsed?.query === 'string') query = parsed.query;
-      if (typeof parsed?.num === 'number') num = parsed.num;
-      if (typeof parsed?.includeContent === 'boolean') includeContent = parsed.includeContent;
-      if (typeof parsed?.days === 'number') days = parsed.days;
-      if (parsed?.depth === 'basic' || parsed?.depth === 'advanced') depth = parsed.depth;
-    } catch {
-      // input is plain query string
-    }
+  async _call(input: z.infer<typeof this.schema>): Promise<string> {
+    const { query, num, includeContent, days, depth } = input;
 
-    const results = await tavilySearch(query, num, { days, depth });
+    const results = await tavilySearch(query, num ?? 3, { days, depth });
 
     if (includeContent && results.length) {
       const k = Math.min(results.length, 8);
@@ -117,4 +111,6 @@ export const webSearchTool = new DynamicTool({
 
     return JSON.stringify(results);
   }
-});
+}
+
+export const webSearchTool = new WebSearchTool();

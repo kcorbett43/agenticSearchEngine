@@ -24,6 +24,6 @@ export function createOpenAiToolModel(tools: Tool[]): LlmProvider {
     maxRetries: 2,
     timeout: 60_000
   });
-  return model.bindTools(tools);
+  return (model as any).bindTools(tools, { tool_choice: 'auto', parallel_tool_calls: false });
 }
 
