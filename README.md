@@ -1,4 +1,4 @@
-## Artisan Research (TypeScript)
+## Artisan Research Web App
 
 An AI-powered research and enrichment web app, using Typescript, that can take natural language queries about companies or people and return structured, sourced "magic variables". Handle different output types (boolean questions, specific answers, contextual information) based on the users input.
 
@@ -13,6 +13,7 @@ OPENAI_API_KEY=
 SEARCH_PROVIDER=tavily
 TAVILY_API_KEY=
 OPENAI_MODEL=
+  eg gpt-5 or gpt-4o-mini
 ```
 
 ### Setup (Docker)
@@ -59,3 +60,25 @@ docker compose down
 The implementation lives in `server/src/services/researchAgent.ts`
 
 
+### Further Development
+
+- latency: web requests are responsible for most of the latency.
+  - next steps:
+    - keep summaries of webpages traversed in DB.
+    - create more "facts" as agents scan through trusted sources.
+    - enhance the "judge" model to more accurately determine when enough infomation has been provided.
+      - a binary classifier may be better than an LLM in this case or in addition to the judeg model.
+    - run tools at each iteration in parallel, have an "aggregation" model to combine sources and provide context to the "system" model.
+
+- web contexualization: currently web pages are searched one by one through Tavily
+  - next steps:
+    - gather web pages from each page visited and add those to potential future searches.
+
+- UI
+  - next steps:
+    - Give users context for what tools and actions the LLM is taking and allow for early stopping.
+
+- Facts: Currently facts are given a confidence score by the LLM. If a user implicitly gives credence to a fact, that confidence score is increased.
+  - next steps:
+    - more robust fact handling: outside of the user workflow, conduct searches on existing facts to corrobarate. Update confidence score based on independent searches.
+    - remove stale facts after a certain amount of time.
