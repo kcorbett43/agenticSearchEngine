@@ -31,6 +31,62 @@ function getIntensityCaps(intensity: ResearchIntensity): { maxIterations: number
   return { maxIterations: cappedSteps, maxWebSearches: cappedWeb };
 }
 
+// Early-stop controls
+const ENABLE_EARLY_STOP = process.env.RESEARCH_EARLY_STOP !== 'false';
+const STALE_ROUNDS = Number(process.env.RESEARCH_STALE_ROUNDS ?? 2);
+
+function countHighAuthoritySources(results: Array<{ url?: string }>): number {
+  const urls = new Set(
+    (results || [])
+      .map(r => r?.url)
+      .filter((u): u is string => !!u && getAuthorityScore(u) >= 70)
+  );
+  return urls.size;
+}
+
+// Stop-judge controls
+const ENABLE_STOP_JUDGE = true;
+const STOP_JUDGE_MIN_STEPS = Number(process.env.RESEARCH_STOP_JUDGE_MIN_STEPS ?? 1);
+const STOP_JUDGE_MODEL = process.env.RESEARCH_STOP_JUDGE_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+
+type StopDecision = { decision: 'finalize' | 'continue'; reason?: string; confidence?: number };
+
+async function shouldStopNowJudge(snapshot: any): Promise<StopDecision> {
+  try {
+    const judgeModel = new ChatOpenAI({
+      model: STOP_JUDGE_MODEL,
+      temperature: 0,
+      apiKey: process.env.OPENAI_API_KEY,
+      maxRetries: 1,
+      timeout: 20_000
+    });
+
+    const sys = new SystemMessage(
+      'You are a strict research supervisor. Decide whether the agent should STOP now and finalize or CONTINUE gathering evidence.'
+    );
+    const human = new HumanMessage(
+      `Decision criteria:\n` +
+      `- Must meet citations policy: >= minCorroboration sources; if requireAuthority=true, at least one authority >=70.\n` +
+      `- Prefer stopping when sufficient, or when recent rounds show no progress (staleRounds >= 2).\n` +
+      `- Prefer continuing if expected variables likely missing or sources conflict.\n\n` +
+      `Snapshot JSON:\n${JSON.stringify(snapshot)}\n\n` +
+      `Return ONLY JSON: {"decision":"finalize|continue","reason":"...","confidence":0..1}`
+    );
+
+    const ai = await judgeModel.invoke([sys, human]);
+    const raw = typeof ai.content === 'string'
+      ? ai.content
+      : Array.isArray((ai as any).content)
+        ? (ai as any).content.map((c: any) => (typeof c === 'string' ? c : c?.text ?? '')).join('')
+        : String((ai as any).content);
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && (parsed.decision === 'finalize' || parsed.decision === 'continue')) return parsed;
+    } catch {}
+  } catch {}
+  return { decision: 'continue', reason: 'fallback', confidence: 0 };
+}
+
 function dedupeByUrl(sources: SourceAttribution[]): SourceAttribution[] {
   const seen = new Set<string>();
   const out: SourceAttribution[] = [];
@@ -347,6 +403,7 @@ Policies:
 - Cite sources for all factual claims.
 - If any required field is missing, return an ask_clarification action.
 - On tool errors, surface a concise explanation and retry once with safer params.
+- Stop using tools as soon as you have sufficient evidence to meet the citations policy; immediately output ONLY the final JSON.
 `;
 
   const trustedFactsText = trustedFacts.length
@@ -372,10 +429,40 @@ ${schemaText}`
   let steps = 0;
   let webSearchCount = 0;
   let finalRaw = '';
+  let prevUniqueUrlCount = 0;
+  let staleRounds = 0;
   
   
   const toolUseRegistry = new Set<string>();
   const toolResultCache = new Map<string, string>();
+
+  // Build snapshot for the stop-judge model
+  function buildEvidenceSnapshot(): any {
+    const urlToAuth = new Map<string, { title?: string; url: string; authority: number }>();
+    for (const r of webResults) {
+      const u = r?.url;
+      if (!u || u === 'about:blank') continue;
+      if (!urlToAuth.has(u)) {
+        urlToAuth.set(u, { title: r.title, url: u, authority: getAuthorityScore(u) });
+      }
+    }
+    const sources = Array.from(urlToAuth.values()).sort((a, b) => b.authority - a.authority);
+    const highAuthorityCount = sources.filter(s => s.authority >= 70).length;
+    return {
+      query,
+      expectedVars: expectedVars.map(v => v.name),
+      steps,
+      maxSteps: MAX_STEPS,
+      webSearchCount,
+      maxWebSearches,
+      staleRounds,
+      minCorroboration: routerOut.evidencePolicy?.minCorroboration ?? 1,
+      requireAuthority: !!routerOut.evidencePolicy?.requireAuthority,
+      uniqueUrlCount: sources.length,
+      highAuthorityCount,
+      sources: sources.slice(0, 8)
+    };
+  }
 
   function willRunTool(name: string, args: any): { allowed: boolean; fp: string } {
     const sortedKeys = Object.keys(args).sort();
@@ -538,6 +625,15 @@ ${schemaText}`
                 webResults = [...webResults, ...parsed];
               }
             } catch {}
+            {
+              const uniqueUrlCount = new Set(webResults.map(r => r.url).filter(Boolean)).size;
+              if (uniqueUrlCount <= prevUniqueUrlCount) {
+                staleRounds += 1;
+              } else {
+                staleRounds = 0;
+              }
+              prevUniqueUrlCount = uniqueUrlCount;
+            }
           } else if (toolName === 'evaluate_plausibility') {
             console.log('evaluate_plausibility');
             try { console.log(JSON.stringify(argsObj)); } catch { console.log(String(argsObj)); }
@@ -561,6 +657,21 @@ ${schemaText}`
               } catch {
                 webSearchCount += 1;
               }
+            }
+            try {
+              const parsed = JSON.parse(result);
+              if (Array.isArray(parsed)) {
+                webResults = [...webResults, ...parsed];
+              }
+            } catch {}
+            {
+              const uniqueUrlCount = new Set(webResults.map(r => r.url).filter(Boolean)).size;
+              if (uniqueUrlCount <= prevUniqueUrlCount) {
+                staleRounds += 1;
+              } else {
+                staleRounds = 0;
+              }
+              prevUniqueUrlCount = uniqueUrlCount;
             }
           } else {
             result = JSON.stringify({ error: `Unknown tool: ${toolName}` });
@@ -608,6 +719,50 @@ ${schemaText}`
     await history.addMessage(ai);
     for (const tm of pendingToolMsgs) {
       await history.addMessage(tm);
+    }
+
+    // Early-stop: sufficient evidence or no progress
+    if (ENABLE_EARLY_STOP && steps < MAX_STEPS) {
+      const minCorroboration = routerOut.evidencePolicy?.minCorroboration ?? 1;
+      const highAuthCount = countHighAuthoritySources(webResults);
+      const hasEnoughEvidence = highAuthCount >= minCorroboration && webResults.length > 0;
+      const noProgress = staleRounds >= STALE_ROUNDS && webSearchCount > 0;
+
+      if (hasEnoughEvidence || noProgress) {
+        const nudge = new HumanMessage(
+          'You now have sufficient evidence to satisfy the citations policy or further searches show no progress. Stop using tools and produce ONLY the final JSON strictly matching the schema.'
+        );
+        messages.push(nudge);
+        await history.addUserMessage(nudge.content as string);
+
+        const aiFinal = await baseModel.invoke(messages);
+        messages.push(aiFinal);
+        await history.addMessage(aiFinal);
+        finalRaw = typeof aiFinal.content === 'string' ? aiFinal.content : '';
+        break;
+      }
+    }
+
+    // Supervisor stop-judge (advisory): finalize only if judge says finalize AND heuristics indicate sufficiency/no-progress
+    if (ENABLE_STOP_JUDGE && steps >= STOP_JUDGE_MIN_STEPS && steps < MAX_STEPS) {
+      const snapshot = buildEvidenceSnapshot();
+      const judge = await shouldStopNowJudge(snapshot);
+      const minCorroboration = routerOut.evidencePolicy?.minCorroboration ?? 1;
+      const hasEnoughEvidence = countHighAuthoritySources(webResults) >= minCorroboration && webResults.length > 0;
+      const noProgress = staleRounds >= STALE_ROUNDS && webSearchCount > 0;
+      if (judge.decision === 'finalize' && (hasEnoughEvidence || noProgress)) {
+        const nudge = new HumanMessage(
+          'Supervisor: Sufficient evidence or no progress. Stop using tools and produce ONLY the final JSON strictly matching the schema.'
+        );
+        messages.push(nudge);
+        await history.addUserMessage(nudge.content as string);
+
+        const aiFinal = await baseModel.invoke(messages);
+        messages.push(aiFinal);
+        await history.addMessage(aiFinal);
+        finalRaw = typeof aiFinal.content === 'string' ? aiFinal.content : '';
+        break;
+      }
     }
 
     if ((failedToolCalls.length > 0 || successfulToolCalls.length > 0) && steps < MAX_STEPS) {
