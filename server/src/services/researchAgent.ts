@@ -6,8 +6,8 @@ import { webSearchTool } from '../tools/webSearch.js';
 import { ChatOpenAI } from '@langchain/openai';
 import { getHistory, trimHistory } from './memory.js';
 import { addMemory } from './longTermMemory.js';
-import { getTrustedFactsForEntity, storeFact } from './factsStore.js';
-import { resolveEntity } from './entityResolver.js';
+import { Fact, getFactsForEntity, storeFact } from './factsStore.js';
+import { resolveEntity, tryResolveExistingEntity } from './entityResolver.js';
 import { z } from 'zod';
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import { plausibilityCheckTool } from '../tools/plausibilityCheck.js';
@@ -297,9 +297,7 @@ export async function runAgent(query: string, expectedVars: MagicVariableDefinit
 
   // Determine default subject from entity parameter
   const defaultSubjectName = entity || 'Unknown Entity';
-  const defaultSubjectType = routerOut.entityTypePrior && Object.keys(routerOut.entityTypePrior).length > 0
-    ? Object.entries(routerOut.entityTypePrior).sort((a, b) => b[1] - a[1])[0][0]
-    : 'company';
+  const defaultSubjectType = routerOut.entityType || 'organization';
 
   const schemaText = `
 {
@@ -329,22 +327,20 @@ IMPORTANT: Every variable MUST include a "subject" object. The subject should be
   const sid = sessionId || 'default_research';
   const history = getHistory(sid);
 
-  const trustedFacts = entity ? await getTrustedFactsForEntity(entity) : {};
+  let trustedFacts: Fact[] = [];
+  if (entity) {
+    const resolved = await tryResolveExistingEntity(entity);
+    if (resolved) {
+      trustedFacts = await getFactsForEntity(resolved.id);
+    }
+  }
 
-  // Build entity type context from router priors
-  const topEntityTypes = Object.entries(routerOut.entityTypePrior)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .filter(([_, prob]) => prob > 0.1)
-    .map(([type, prob]) => `${type} (${(prob * 100).toFixed(0)}%)`)
-    .join(', ');
-  
   const vocabContext = routerOut.vocabHints.boost.length > 0
     ? `\n- Contextual vocabulary hints: Boost relevance for terms like: ${routerOut.vocabHints.boost.join(', ')}`
     : '';
   
-  const entityTypeContext = topEntityTypes
-    ? `\n- Most likely entity types: ${topEntityTypes}`
+  const entityTypeContext = routerOut.entityType
+    ? `\n- Most likely entity type: ${routerOut.entityType}`
     : '';
 
   // Inject current date into system prompt
@@ -397,8 +393,8 @@ Policies:
 - On tool errors, surface a concise explanation and retry once with safer params.
 `;
 
-  const trustedFactsText = Object.values(trustedFacts).length
-    ? `Trusted facts provided for entity "${entity}":\n${Object.values(trustedFacts).map(f => `- ${f.field}: ${String(f.value)} (source: ${f.source ?? 'user'})`).join('\n')}`
+  const trustedFactsText = trustedFacts.length
+    ? `Trusted facts provided for entity "${entity}":\n${trustedFacts.map(f => `- ${f.name}: ${String(f.value)} (source: ${f.sources && f.sources.length > 0 ? f.sources[0].url : 'user'})`).join('\n')}`
     : '';
 
   const intro = new HumanMessage(
@@ -621,13 +617,15 @@ ${schemaText}`
   console.log(result);
 
   // Apply trusted facts overrides when available
-  if (entity && Object.values(trustedFacts).length) {
+  if (entity && trustedFacts.length > 0) {
     for (const v of result.variables) {
-      const tf = (trustedFacts as any)[v.name];
+      const tf = trustedFacts.find(f => f.name === v.name);
       if (tf && tf.value !== undefined) {
         v.value = tf.value as any;
         v.confidence = 1.0;
-        const tfSource: SourceAttribution = tf.source ? { title: undefined, url: tf.source, snippet: undefined } : { title: 'Trusted user fact', url: 'about:trusted-fact', snippet: undefined };
+        const tfSource: SourceAttribution = tf.sources && tf.sources.length > 0 
+          ? { title: tf.sources[0].title, url: tf.sources[0].url, snippet: tf.sources[0].snippet }
+          : { title: 'Trusted user fact', url: 'about:trusted-fact', snippet: undefined };
         v.sources = dedupeByUrl([tfSource, ...v.sources]);
       }
     }

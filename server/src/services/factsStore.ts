@@ -1,5 +1,5 @@
 import { pool } from './db.js';
-import { resolveEntity } from './entityResolver.js';
+import { resolveEntity, tryResolveExistingEntity } from './entityResolver.js';
 import { MagicVariableValue, SourceAttribution } from '../types.js';
 
 export interface Fact {
@@ -16,21 +16,15 @@ export interface Fact {
   valid_to: Date | null;
 }
 
-/**
- * Stores a fact (magic variable) with entity resolution.
- * Closes any existing current fact for the same (entity_id, name) and creates a new one.
- */
 export async function storeFact(
   variable: MagicVariableValue,
   observedAt?: Date
 ): Promise<Fact> {
-  // Resolve the entity
+
   const entityId = await resolveEntity(variable.subject.name, variable.subject.type);
 
   const now = observedAt || new Date();
-  const observedAtISO = now.toISOString();
 
-  // Close any existing current fact (set valid_to to now)
   await pool.query(
     `UPDATE facts 
      SET valid_to = $1 
@@ -38,7 +32,6 @@ export async function storeFact(
     [now, entityId, variable.name]
   );
 
-  // Insert new fact as current (valid_to = NULL)
   const result = await pool.query(
     `INSERT INTO facts (
       entity_id, name, value, dtype, confidence, sources, notes, observed_at, valid_from, valid_to
@@ -73,9 +66,6 @@ export async function storeFact(
   };
 }
 
-/**
- * Gets the current fact for a given entity and fact name.
- */
 export async function getFact(entityId: string, factName: string): Promise<Fact | null> {
   const result = await pool.query(
     `SELECT id, entity_id, name, value, dtype, confidence, sources, notes, observed_at, valid_from, valid_to
@@ -105,9 +95,6 @@ export async function getFact(entityId: string, factName: string): Promise<Fact 
   };
 }
 
-/**
- * Gets all current facts for an entity.
- */
 export async function getFactsForEntity(entityId: string): Promise<Fact[]> {
   const result = await pool.query(
     `SELECT id, entity_id, name, value, dtype, confidence, sources, notes, observed_at, valid_from, valid_to
@@ -132,45 +119,6 @@ export async function getFactsForEntity(entityId: string): Promise<Fact[]> {
   }));
 }
 
-/**
- * Legacy compatibility: Get trusted facts for an entity (by entity name string).
- * This resolves the entity name to an entity_id and returns facts as the old format.
- */
-export async function getTrustedFactsForEntity(entityName: string): Promise<Record<string, any>> {
-  try {
-    // Try to find entity by name
-    const entityResult = await pool.query(
-      `SELECT id FROM entities WHERE LOWER(canonical_name) = LOWER($1) LIMIT 1`,
-      [entityName]
-    );
-
-    if (entityResult.rows.length === 0) {
-      return {};
-    }
-
-    const entityId = entityResult.rows[0].id;
-    const facts = await getFactsForEntity(entityId);
-
-    const out: Record<string, any> = {};
-    for (const fact of facts) {
-      out[fact.name] = {
-        entity: entityName,
-        field: fact.name,
-        value: fact.value,
-        source: fact.sources && fact.sources.length > 0 ? fact.sources[0].url : undefined,
-        updatedAt: fact.observed_at,
-        updatedBy: undefined
-      };
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Legacy compatibility: Set a trusted fact.
- */
 export async function setTrustedFact(params: {
   entity: string;
   field: string;
@@ -178,23 +126,28 @@ export async function setTrustedFact(params: {
   source?: string;
   updatedBy?: string;
 }): Promise<any> {
-  // Try to determine entity type from context (default to 'company')
-  const entityType = 'company'; // Could be enhanced to detect from context
+
+  const existing = await tryResolveExistingEntity(params.entity);
+  if (!existing) {
+    throw new Error(`Entity "${params.entity}" not found. Cannot set trusted fact for unknown entity.`);
+  }
   
-  const entityId = await resolveEntity(params.entity, entityType);
+  const existingFact = await getFact(existing.id, params.field);
+  const originalConfidence = existingFact?.confidence ?? 0.5;
+  const newConfidence = (originalConfidence + 1.0) / 2;
   
   const variable: MagicVariableValue = {
     subject: {
-      name: params.entity,
-      type: entityType,
-      canonical_id: entityId
+      name: existing.name,
+      type: existing.type,
+      canonical_id: existing.id
     },
     name: params.field,
     type: typeof params.value === 'number' ? 'number' :
           typeof params.value === 'boolean' ? 'boolean' :
           'string',
     value: params.value,
-    confidence: 1.0,
+    confidence: newConfidence,
     sources: params.source ? [{ url: params.source }] : [],
     observed_at: new Date().toISOString()
   };
@@ -211,9 +164,6 @@ export async function setTrustedFact(params: {
   };
 }
 
-/**
- * Finds similar/related fact variable names for an entity, used to map synonyms.
- */
 export async function findSimilarFactNames(entityId: string, patternBase: string, limit: number = 5): Promise<string[]> {
   const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_');
   const base = normalize(patternBase);
@@ -227,5 +177,3 @@ export async function findSimilarFactNames(entityId: string, patternBase: string
     return [];
   }
 }
-
-
