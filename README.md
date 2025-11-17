@@ -1,4 +1,4 @@
-## Artisan Research Web App
+## Agentic Search Engine
 
 An AI-powered research and enrichment web app. Takes in natural language queries and returns structured, sourced variables. Handles different output types (boolean, questions, specific answers, contextual information) based on the users input.
 
