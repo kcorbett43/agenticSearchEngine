@@ -1,6 +1,6 @@
 ## Artisan Research Web App
 
-An AI-powered research and enrichment web app, using Typescript, that can take natural language queries about companies or people and return structured, sourced "magic variables". Handle different output types (boolean questions, specific answers, contextual information) based on the users input.
+An AI-powered research and enrichment web app. Takes in natural language queries and returns structured, sourced variables. Handles different output types (boolean, questions, specific answers, contextual information) based on the users input.
 
 Outputs concise answers to queries. Click on "View Full JSON Response" to see the
 full variable output.
