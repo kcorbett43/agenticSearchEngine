@@ -38,7 +38,7 @@ docker compose exec server npm run migrate
 
 4. Access
    - Client: http://localhost:5173
-   - Postgres (pgvector): localhost:5432 (user: artisan, password: artisan, db: artisan)
+   - Postgres (pgvector): localhost:5432 (user: user, password: user, db: user)
 
 5. Stop
 ```
